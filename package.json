@@ -1,0 +1,12 @@
+{
+  "name": "tinh-api",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.0",
+    "express": "^4.18.2"
+  }
+}
