@@ -340,3 +340,4 @@ async def setup(bot):
         bot.add_view(BidView(auction_id))
 
     bot.loop.create_task(auction_realtime_loop(bot))
+print("Loaded dau_gia.py has finished!")
