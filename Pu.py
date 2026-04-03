@@ -1,323 +1,445 @@
-import discord
-import json
-import os
-import time
+from __future__ import annotations
+
 import asyncio
-from Data import data_user
-from bot_queue import paced_call, auction_signature, get_cached_signature, set_cached_signature
+import shlex
+from typing import Optional
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import discord
 
-WAIFU_FILE = os.path.join(BASE_DIR, "Data", "waifu_data.json")
-INV_FILE = os.path.join(BASE_DIR, "Data", "inventory.json")
-AUCTION_FILE = os.path.join(BASE_DIR, "Data", "auction.json")
-CHANNEL_FILE = os.path.join(BASE_DIR, "Data", "auction_channels.json")
+from Commands.bag import bag_logic
+from Commands.baucua import baucua_logic
+from Commands.code import code_logic
+from Commands.coinflip import coinflip_logic
+from Commands.couple import (
+    couple_cancel_logic,
+    couple_gift_logic,
+    couple_info_logic,
+    couple_logic,
+    couple_release_logic,
+)
+from Commands.daily import daily_logic
+from Commands.dau_gia import dau_gia_logic
+from Commands.gift_waifu_ad import gift_waifu_ad_logic
+from Commands.give import gift_logic
+from Commands.gold import gold_logic
+from Commands.huy_dau_gia import huy_dau_gia_logic
+from Commands.roll_waifu import roll_waifu_logic
+from Commands.select_waifu import select_waifu_logic
+from Commands.sell import sell_logic
+from Commands.setup import setup_channel_logic
+from Commands.shop import send_shop_embed_logic
+from Commands.use import use_logic
+from Commands.view_waifu import view_waifu_logic
+from Commands.waifu_list import waifu_list_run
+from Commands.work import work_run
+from Commands.help import help_prefix
 
 
-# ===== LOAD/SAVE =====
-def load_json(path):
-    if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({}, f, ensure_ascii=False)
+def _normalize_name(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def _parse_mention_id(token: str) -> Optional[int]:
+    if not token:
+        return None
+    token = token.strip()
+    if token.startswith("<@") and token.endswith(">"):
+        token = token[2:-1]
+        if token.startswith("!"):
+            token = token[1:]
+    if token.startswith("<#") and token.endswith(">"):
+        token = token[2:-1]
     try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+        return int(token)
+    except Exception:
+        return None
 
 
-def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+async def _resolve_user(bot, message: discord.Message, token: Optional[str]) -> Optional[discord.abc.User]:
+    if not token:
+        return None
+
+    uid = _parse_mention_id(token)
+    if uid is None:
+        return None
+
+    if message.guild:
+        member = message.guild.get_member(uid)
+        if member:
+            return member
+
+    user = bot.get_user(uid)
+    if user:
+        return user
+
+    try:
+        return await bot.fetch_user(uid)
+    except Exception:
+        return None
 
 
-def load_channels():
-    return load_json(CHANNEL_FILE)
+def _resolve_channel(message: discord.Message, token: Optional[str]) -> Optional[discord.abc.GuildChannel]:
+    if not token or not message.guild:
+        return None
+    cid = _parse_mention_id(token)
+    if cid is None:
+        return None
+    return message.guild.get_channel(cid)
 
 
-# ===== UI =====
-def get_color(rank):
-    return {
-        "truyen_thuyet": 0x00FFFF,
-        "toi_thuong": 0xFF0000,
-        "limited": 0xFF00FF
-    }.get(rank, 0xFFD700)
+class _PrefixResponse:
+    def __init__(self, ctx: "PrefixContext"):
+        self.ctx = ctx
+        self.last_message: Optional[discord.Message] = None
+
+    async def send_message(self, *args, **kwargs):
+        kwargs.pop("ephemeral", None)
+        self.last_message = await self.ctx.channel.send(*args, **kwargs)
+        return self.last_message
+
+    async def edit_message(self, *args, **kwargs):
+        if not self.last_message:
+            raise RuntimeError("No message to edit")
+        return await self.last_message.edit(*args, **kwargs)
+
+    async def defer(self, *args, **kwargs):
+        return None
+
+    async def send_modal(self, modal):
+        raise RuntimeError("Modal không hỗ trợ trong prefix command")
 
 
-def build_embed(auction, waifu_data, auction_id=None):
-    waifu_id = auction["waifu_id"]
-    uid = auction["seller"]
-    rank = waifu_data.get(waifu_id, {}).get("rank")
+class _PrefixFollowup:
+    def __init__(self, ctx: "PrefixContext"):
+        self.ctx = ctx
 
-    current = auction.get("current_bid", 0)
-    highest = auction.get("highest_bidder")
-    holder = f"<@{highest}>" if highest else "Chưa có ai"
+    async def send(self, *args, **kwargs):
+        kwargs.pop("ephemeral", None)
+        return await self.ctx.channel.send(*args, **kwargs)
 
+
+class PrefixContext:
+    def __init__(self, bot: discord.Client, message: discord.Message):
+        self.bot = bot
+        self.client = bot
+        self.message = message
+        self.user = message.author
+        self.author = message.author
+        self.guild = message.guild
+        self.channel = message.channel
+        self.response = _PrefixResponse(self)
+        self.followup = _PrefixFollowup(self)
+
+    async def original_response(self):
+        return self.response.last_message
+
+    async def send(self, *args, **kwargs):
+        return await self.channel.send(*args, **kwargs)
+
+
+async def _send_embed_like(ctx: PrefixContext, embed_data: dict):
     embed = discord.Embed(
-        title="⚖️ BUỔI ĐẤU GIÁ MỚI HÔM NAY ⚖️",
-        description=(
-            f"🌹 **Tên Waifu:** {waifu_id}\n"
-            f"🎖️ Rank: **{rank}**\n\n"
-            f"🛞 <@{uid}> đã đăng bán **{waifu_id} của mình lên sàn đấu giá!**\n\n"
-            f"💰 Giá khởi điểm: {auction['min_price']} 🪙\n"
-            f"📈 Bước giá: {auction['step']} 🪙\n\n"
-            f"🎙️ Giá cao nhất: **{current}** 🪙\n"
-            f"🏍️ Người giữ giá: {holder}\n\n"
-            f"⏳ Còn: <t:{int(auction['end_time'])}:R>\n"
-        ),
-        color=get_color(rank)
+        title=embed_data.get("title", ""),
+        description=embed_data.get("description", ""),
+        color=discord.Color.pink(),
     )
+    image = embed_data.get("image")
+    footer = embed_data.get("footer")
+    if image:
+        embed.set_image(url=image)
+    if footer:
+        embed.set_footer(text=footer)
+    return await ctx.channel.send(embed=embed)
 
-    if "image" in waifu_data.get(waifu_id, {}):
-        embed.set_image(url=waifu_data[waifu_id]["image"])
 
-    embed.set_footer(text=f"🆔 Auction ID: {auction_id}")
-    return embed
+async def setup(bot):
+    """
+    Install the prefix listener.
+    """
+    if getattr(bot, "_prefix_listener_ready", False):
+        return
+    bot._prefix_listener_ready = True
 
-
-# ===== BID =====
-class BidModal(discord.ui.Modal, title="Đặt số tiền bạn muốn đấu giá!"):
-    amount = discord.ui.TextInput(label="Số gold muốn đặt")
-
-    def __init__(self, auction_id):
-        super().__init__()
-        self.auction_id = auction_id
-        self.client = None
-
-    async def on_submit(self, interaction: discord.Interaction):
-        self.client = interaction.client
-        await interaction.response.send_message("⏳ Đang xử lý...", ephemeral=True)
-
-        auctions = load_json(AUCTION_FILE)
-        waifu_data = load_json(WAIFU_FILE)
-
-        auction = auctions.get(self.auction_id)
-        uid = str(interaction.user.id)
-
-        if not auction:
-            return await interaction.followup.send("❌ Sự kiện đấu giá này không tồn tại!", ephemeral=True)
-        if uid == auction["seller"]:
-            return await interaction.followup.send("❌ Không thể tham gia buổi đấu giá của chính mình!", ephemeral=True)
-        if uid == auction.get("highest_bidder"):
-            return await interaction.followup.send("❌ Bạn đang giữ giá rồi!", ephemeral=True)
-        if time.time() >= auction["end_time"]:
-            return await interaction.followup.send("❌ Sự kiện đấu giá này đã kết thúc!", ephemeral=True)
+    async def on_message(message: discord.Message):
+        if message.author.bot:
+            return
+        if not message.content.startswith("."):
+            return
 
         try:
-            bid = int(self.amount.value)
-        except:
-            return await interaction.followup.send("❌ Số gold đặt mua không hợp lệ!", ephemeral=True)
+            parts = shlex.split(message.content[1:])
+        except ValueError:
+            return
 
-        current = auction.get("current_bid", 0)
-        if current == 0 and bid < auction["min_price"]:
-            return await interaction.followup.send("❌ Giá đặt lần này quá thấp!", ephemeral=True)
-        if current != 0 and bid < current + auction["step"]:
-            return await interaction.followup.send("❌ Chưa đủ số gold tối thiểu mỗi lần đặt!", ephemeral=True)
-        if data_user.get_user(uid)["gold"] < bid:
-            return await interaction.followup.send("❌ Không đủ gold!", ephemeral=True)
+        if not parts:
+            return
 
-        prev_bidder = auction.get("highest_bidder")
-        prev_amount = auction.get("current_bid", 0)
+        raw_name = _normalize_name(parts[0])
+        args = parts[1:]
+        ctx = PrefixContext(bot, message)
 
-        if not data_user.remove_gold(uid, bid):
-            return await interaction.followup.send("❌ Lỗi trừ gold!", ephemeral=True)
-        if prev_bidder and prev_bidder != uid:
-            data_user.add_gold(prev_bidder, prev_amount)
+        async def reply(msg, ephemeral=False):
+            return await ctx.response.send_message(msg, ephemeral=ephemeral)
 
-        auction["highest_bidder"] = uid
-        auction["current_bid"] = bid
-        save_json(AUCTION_FILE, auctions)
+        async def reply_embed(embed_data):
+            return await _send_embed_like(ctx, embed_data)
 
-        await interaction.followup.send(f"💰 Đã đặt {bid} gold cho phiên đấu giá này!", ephemeral=True)
+        # ===== alias map =====
+        aliases = {
+            "setup": "setup",
+            "gold": "gold",
+            "daily": "daily",
+            "work": "work",
+            "roll-waifu": "roll-waifu",
+            "select-waifu": "select-waifu",
+            "waifu-list": "waifu-list",
+            "view-waifu": "view-waifu",
+            "bag": "bag",
+            "shop": "shop",
+            "use": "use",
+            "sell": "sell",
+            "give": "give",
+            "couple": "couple",
+            "couple-release": "couple-release",
+            "couple-cancel": "couple-cancel",
+            "couple-info": "couple-info",
+            "couple-gift": "couple-gift",
+            "coinflip": "coinflip",
+            "baucua": "baucua",
+            "code": "code",
+            "dau-gia": "dau-gia",
+            "huy-dau-gia": "huy-dau-gia",
+            "gift-waifu-ad": "gift-waifu-ad",
+            "help": "help",
 
-        asyncio.create_task(self.update_messages(auction, waifu_data))
+            # 🔥 short alias
+            "bc": "baucua",
+            "bau": "baucua",
+            "cf": "coinflip",
+            "wl": "waifu-list",
+            "vw": "view-waifu",
+            "rw": "roll-waifu",
+            "dg": "dau-gia",
+            "hdg": "huy-dau-gia",
+            "cp": "couple",
+            "cpr": "couple-release",
+            "cpc": "couple-cancel",
+            "cpi": "couple-info",
+            "cpg": "couple-gift",
+            "gwa": "gift-waifu-ad",
+            "h": "help",
+            "s": "sell",
+            "gift": "give",
+            "coin": "coinflip",
+            "ws": "select-waifu",
+        }
 
-    async def update_messages(self, auction, waifu_data):
-        tasks = []
-        for msg_info in auction.get("messages", []):
-            channel = self.client.get_channel(int(msg_info["channel_id"]))
-            if not channel:
-                continue
+        # ===== SMART PARSER =====
+        cmd = None
+        used_len = 1
 
-            async def edit_message(mi=msg_info, ch=channel):
-                try:
-                    message = await paced_call(lambda: ch.fetch_message(int(mi["message_id"])))
-                    await paced_call(lambda: message.edit(embed=build_embed(auction, waifu_data, self.auction_id), view=BidView(self.auction_id)))
-                except:
-                    pass
+        # thử 3 từ → 2 từ → 1 từ
+        for i in (3, 2, 1):
+            if len(parts) >= i:
+                name = _normalize_name("-".join(parts[:i]))
+                if name in aliases:
+                    cmd = aliases[name]
+                    used_len = i
+                    break
 
-            tasks.append(edit_message())
+        if cmd is None:
+            return
 
-        if tasks:
-            await asyncio.gather(*tasks)
+        args = parts[used_len:]
 
+        # ===== dispatch =====
+        try:
+            if cmd == "setup":
+                if len(args) < 2:
+                    return await reply("❌ Cú pháp: .setup <auction|ranking> <channel_id>")
+                ch = _parse_mention_id(args[1])
+                channel_id = str(ch) if ch is not None else args[1]
+                return await setup_channel_logic(ctx, args[0], channel_id)
 
-# ===== VIEW =====
-class BidView(discord.ui.View):
-    def __init__(self, auction_id):
-        super().__init__(timeout=None)
-        self.auction_id = auction_id
+            if cmd == "gold":
+                target = message.author
+                if args:
+                    target = await _resolve_user(bot, message, args[0]) or message.author
+                return await gold_logic(ctx, target)
 
-    @discord.ui.button(label="💰 Đặt gold đấu giá", style=discord.ButtonStyle.green, custom_id="bid_button")
-    async def bid(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BidModal(self.auction_id))
+            if cmd == "daily":
+                return await daily_logic(ctx)
 
+            if cmd == "work":
+                return await work_run(ctx)
 
-# ===== COMMAND LOGIC =====
-async def dau_gia_logic(interaction, waifu_id: str, min_price: int, step: int):
-    channels = load_channels()
-    guild_id = str(interaction.guild.id)
+            if cmd == "roll-waifu":
+                if not args:
+                    return await reply("❌ Cú pháp: .roll-waifu <free|200|500|1000|2000>")
+                return await roll_waifu_logic(ctx, args[0])
 
-    if guild_id not in channels or not channels[guild_id].get("auction_channel_id"):
-        return await interaction.response.send_message("❌ Server chưa setup kênh!", ephemeral=True)
+            if cmd == "select-waifu":
+                if not args:
+                    return await reply("❌ Cú pháp: .select-waifu <waifu_id>")
+                return await select_waifu_logic(ctx, args[0])
 
-    waifu_data = load_json(WAIFU_FILE)
-    inv = load_json(INV_FILE)
-    auctions = load_json(AUCTION_FILE)
-    uid = str(interaction.user.id)
+            if cmd == "waifu-list":
+                target = _resolve_user(bot, message, args[0]) if args else None
+                return await waifu_list_run(ctx, target)
 
-    if waifu_id not in inv.get(uid, {}).get("waifus", {}):
-        return await interaction.response.send_message("❌ Bạn không có waifu này!", ephemeral=True)
+            if cmd == "view-waifu":
+                if not args:
+                    return await reply("❌ Cú pháp: .view-waifu <waifu_id>")
+                return await view_waifu_logic(message.author, reply, reply_embed, args[0])
 
-    rank = waifu_data.get(waifu_id, {}).get("rank")
-    if rank not in ["truyen_thuyet", "toi_thuong", "limited"]:
-        return await interaction.response.send_message("❌ Rank không đủ!", ephemeral=True)
+            if cmd == "bag":
+                target = _resolve_user(bot, message, args[0]) if args else None
+                return await bag_logic(ctx, target or message.author)
 
-    inv[uid]["waifus"].pop(waifu_id, None)
+            if cmd == "shop":
+                if not args:
+                    return await reply("❌ Cú pháp: .shop <channel_id>")
+                ch = _parse_mention_id(args[0])
+                channel_id = str(ch) if ch is not None else args[0]
+                return await send_shop_embed_logic(ctx, channel_id)
 
-    auction_id = str(int(time.time()))
-    auctions[auction_id] = {
-        "waifu_id": waifu_id,
-        "seller": uid,
-        "min_price": min_price,
-        "step": step,
-        "current_bid": 0,
-        "highest_bidder": None,
-        "end_time": time.time() + 259200,
-        "messages": []
-    }
+            if cmd == "use":
+                waifu_id = None
+                item_id = None
+                qty = 1
 
-    tasks = []
-    for gid, data in channels.items():
-        channel_id = data.get("auction_channel_id")
-        if not channel_id:
-            continue
+                if not args:
+                    return await reply("❌ Cú pháp: .use <waifu_id>|item <item_id> [qty]")
 
-        channel = interaction.client.get_channel(channel_id)
-        if not channel:
-            continue
+                if args[0].lower() in {"waifu", "item"}:
+                    mode = args[0].lower()
+                    if mode == "waifu":
+                        if len(args) < 2:
+                            return await reply("❌ Cú pháp: .use waifu <waifu_id>")
+                        waifu_id = args[1]
+                    else:
+                        if len(args) < 2:
+                            return await reply("❌ Cú pháp: .use item <item_id> [qty]")
+                        item_id = args[1]
+                        if len(args) >= 3:
+                            qty = int(args[2])
+                else:
+                    candidate = args[0]
+                    if len(args) >= 2 and args[1].isdigit():
+                        item_id = candidate
+                        qty = int(args[1])
+                    else:
+                        waifu_id = candidate
+                return await use_logic(message.author, reply, waifu_id, item_id, qty)
 
-        async def post_message(gid=gid, ch=channel):
-            try:
-                msg = await paced_call(lambda: ch.send(embed=build_embed(auctions[auction_id], waifu_data, auction_id), view=BidView(auction_id)))
-                auctions[auction_id]["messages"].append({
-                    "guild_id": gid,
-                    "channel_id": ch.id,
-                    "message_id": msg.id
-                })
-                set_cached_signature(auction_id, gid, auction_signature(auctions[auction_id]))
-            except:
-                pass
+            if cmd == "sell":
+                if not args:
+                    return await reply("❌ Cú pháp: .sell <waifu_id> [bag|collection] [amount]")
+                waifu_id = args[0]
+                source = None
+                amount = 1
+                if len(args) >= 2:
+                    if args[1].lower() in {"bag", "collection"}:
+                        source = args[1].lower()
+                        if len(args) >= 3:
+                            amount = int(args[2])
+                    elif args[1].isdigit():
+                        amount = int(args[1])
+                return await sell_logic(ctx, waifu_id, source, amount)
 
-        tasks.append(post_message())
+            if cmd == "give":
+                if len(args) < 2:
+                    return await reply("❌ Cú pháp: .give <gold|waifu> <user> ...")
+                type_ = args[0]
+                target = await _resolve_user(bot, message, args[1])
+                if target is None:
+                    return await reply("❌ Không tìm thấy người nhận.")
+                amount = None
+                waifu_id = None
+                if type_ == "gold":
+                    if len(args) < 3:
+                        return await reply("❌ Cú pháp: .give gold <user> <amount>")
+                    amount = int(args[2])
+                elif type_ == "waifu":
+                    if len(args) < 3:
+                        return await reply("❌ Cú pháp: .give waifu <user> <waifu_id>")
+                    waifu_id = args[2]
+                else:
+                    return await reply("❌ Type phải là gold hoặc waifu.")
+                return await gift_logic(ctx, type_, target, amount, waifu_id)
 
-    if tasks:
-        await asyncio.gather(*tasks)
+            if cmd == "couple":
+                if not args:
+                    return await reply("❌ Cú pháp: .couple <user> | .couple release | .couple cancel | .couple info | .couple gift <rose|cake>")
+                sub = _normalize_name(args[0])
 
-    save_json(INV_FILE, inv)
-    save_json(AUCTION_FILE, auctions)
+                if sub == "release":
+                    return await couple_release_logic(bot, ctx)
+                if sub == "cancel":
+                    return await couple_cancel_logic(ctx)
+                if sub == "info":
+                    return await couple_info_logic(ctx)
+                if sub == "gift":
+                    if len(args) < 2:
+                        return await reply("❌ Cú pháp: .couple gift <rose|cake>")
+                    return await couple_gift_logic(ctx, args[1])
 
-    await interaction.response.send_message("✅ Đã đăng đấu giá!", ephemeral=True)
+                target = await _resolve_user(bot, message, args[0])
+                if target is None:
+                    return await reply("❌ Không tìm thấy người dùng.")
+                return await couple_logic(bot, ctx, target)
 
+            if cmd == "couple-release":
+                return await couple_release_logic(bot, ctx)
 
-# ===== LOOP =====
-async def auction_realtime_loop(bot):
-    await bot.wait_until_ready()
+            if cmd == "couple-cancel":
+                return await couple_cancel_logic(ctx)
 
-    while not bot.is_closed():
-        auctions = load_json(AUCTION_FILE)
-        waifu_data = load_json(WAIFU_FILE)
-        inv = load_json(INV_FILE)
+            if cmd == "couple-info":
+                return await couple_info_logic(ctx)
 
-        tasks = []
-        ended_auctions = []
+            if cmd == "couple-gift":
+                if not args:
+                    return await reply("❌ Cú pháp: .couple-gift <rose|cake>")
+                return await couple_gift_logic(ctx, args[0])
 
-        for auction_id, auction in auctions.items():
-            now = time.time()
-            if now < auction.get("end_time", 0):
-                for msg_info in auction.get("messages", []):
-                    channel = bot.get_channel(int(msg_info["channel_id"]))
-                    if not channel:
-                        continue
+            if cmd == "coinflip":
+                if len(args) < 2:
+                    return await reply("❌ Cú pháp: .coinflip <ngua|sap> <amount>")
+                return await coinflip_logic(ctx, args[0], int(args[1]))
 
-                    async def update_message(mi=msg_info, ch=channel, aid=auction_id):
-                        try:
-                            message = await paced_call(lambda: ch.fetch_message(int(mi["message_id"])))
-                            await paced_call(lambda: message.edit(embed=build_embed(auction, waifu_data, aid), view=BidView(aid)))
-                        except:
-                            pass
+            if cmd == "baucua":
+                if len(args) < 2:
+                    return await reply("❌ Cú pháp: .baucua <nai|bau|ga|ca|cua|tom> <amount>")
+                return await baucua_logic(ctx, args[0], int(args[1]))
 
-                    tasks.append(update_message())
-            else:
-                ended_auctions.append(auction_id)
+            if cmd == "code":
+                if not args:
+                    return await reply("❌ Cú pháp: .code <mã>")
+                return await code_logic(ctx, args[0])
 
-                highest = auction.get("highest_bidder")
-                seller = auction.get("seller")
-                waifu_id = auction.get("waifu_id")
-                final_bid = auction.get("current_bid", 0)
+            if cmd == "dau-gia":
+                if len(args) < 3:
+                    return await reply("❌ Cú pháp: .dau-gia <waifu_id> <min_price> <step>")
+                return await dau_gia_logic(ctx, args[0], int(args[1]), int(args[2]))
 
-                for msg_info in auction.get("messages", []):
-                    channel = bot.get_channel(int(msg_info["channel_id"]))
-                    if not channel:
-                        continue
+            if cmd == "huy-dau-gia":
+                if not args:
+                    return await reply("❌ Cú pháp: .huy-dau-gia <auction_id>")
+                return await huy_dau_gia_logic(ctx, args[0])
 
-                    async def end_message(mi=msg_info, ch=channel):
-                        try:
-                            if highest:
-                                inv.setdefault(highest, {}).setdefault("waifus", {})
-                                inv[highest]["waifus"][waifu_id] = 1
-                                if final_bid > 0:
-                                    data_user.add_gold(seller, final_bid)
+            if cmd == "gift-waifu-ad":
+                if not args:
+                    return await reply("❌ Cú pháp: .gift-waifu-ad <waifu_id> [user]")
+                target = await _resolve_user(bot, message, args[1]) if len(args) >= 2 else None
+                return await gift_waifu_ad_logic(ctx, args[0], target)
+            if cmd == "help":
+                await help_prefix(message)
+                return
+        except ValueError:
+            return await reply("❌ Tham số số không hợp lệ.")
+        except Exception as exc:
+            print(f"[PREFIX ERROR] {cmd}: {exc}")
+            return await reply("❌ Có lỗi khi xử lý lệnh.")
 
-                                desc = f"<@{highest}> đã thắng và nhận **{waifu_id}** với {final_bid} gold."
-                            else:
-                                inv.setdefault(seller, {}).setdefault("waifus", {})
-                                inv[seller]["waifus"][waifu_id] = 1
-                                desc = f"Không ai đấu giá **{waifu_id}**, trả lại cho <@{seller}>."
-
-                            embed = discord.Embed(title="🏁 KẾT THÚC ĐẤU GIÁ 🏁", description=desc, color=0x00FF00)
-
-                            if "image" in waifu_data.get(waifu_id, {}):
-                                embed.set_image(url=waifu_data[waifu_id]["image"])
-
-                            message = await paced_call(lambda: ch.fetch_message(int(mi["message_id"])))
-                            await paced_call(lambda: message.edit(embed=embed, view=None))
-                        except:
-                            pass
-
-                    tasks.append(end_message())
-
-        if ended_auctions:
-            for aid in ended_auctions:
-                auctions.pop(aid, None)
-
-            save_json(AUCTION_FILE, auctions)
-            save_json(INV_FILE, inv)
-
-        if tasks:
-            await asyncio.gather(*tasks)
-
-        await asyncio.sleep(10)
-
-
-# ===== SETUP =====
-async def setup(bot):
-    auctions = load_json(AUCTION_FILE)
-
-    for auction_id in auctions:
-        bot.add_view(BidView(auction_id))
-
-    bot.loop.create_task(auction_realtime_loop(bot))
-
-
-print("Loaded dau_gia_logic.py!")
+    bot.add_listener(on_message, "on_message")
