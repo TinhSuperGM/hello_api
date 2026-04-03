@@ -33,6 +33,7 @@ from Commands.view_waifu import view_waifu_logic
 from Commands.waifu_list import waifu_list_run
 from Commands.work import work_run
 from Commands.help import help_prefix
+from Commands.profile import get_profile_embed, resolve_profile_target
 
 
 def _normalize_name(name: str) -> str:
@@ -211,7 +212,7 @@ async def setup(bot):
             "huy-dau-gia": "huy-dau-gia",
             "gift-waifu-ad": "gift-waifu-ad",
             "help": "help",
-
+            "profile": "profile",
             # 🔥 short alias
             "bc": "baucua",
             "bau": "baucua",
@@ -232,6 +233,8 @@ async def setup(bot):
             "gift": "give",
             "coin": "coinflip",
             "ws": "select-waifu",
+            "me": "profile",
+            "pf": "profile",
         }
 
         # ===== SMART PARSER =====
@@ -433,6 +436,21 @@ async def setup(bot):
                     return await reply("❌ Cú pháp: .gift-waifu-ad <waifu_id> [user]")
                 target = await _resolve_user(bot, message, args[1]) if len(args) >= 2 else None
                 return await gift_waifu_ad_logic(ctx, args[0], target)
+            if cmd == "profile":
+                # Ưu tiên mention
+                if message.mentions:
+                    target = message.mentions[0]
+                else:
+                    query = " ".join(args).strip() if args else None
+                    target = await resolve_profile_target(
+                        bot=bot,
+                        author=message.author,
+                        query=query,
+                        message=message,
+                    )
+
+                embed = get_profile_embed(bot, target)
+                return await ctx.send(embed=embed)
             if cmd == "help":
                 await help_prefix(message)
                 return
