@@ -34,6 +34,7 @@ from Commands.waifu_list import waifu_list_run
 from Commands.work import work_run
 from Commands.help import help_prefix
 from Commands.profile import get_profile_embed
+from Commands.prayer import prayer_logic
 
 
 def _normalize_name(name: str) -> str:
@@ -281,6 +282,8 @@ async def setup(bot):
             "ws": "select-waifu",
             "me": "profile",
             "pf": "profile",
+            "prayer": "prayer",
+            "pray": "prayer",
         }
 
         # ===== SMART PARSER =====
@@ -348,9 +351,18 @@ async def setup(bot):
                 return await view_waifu_logic(message.author, reply, reply_embed, args[0])
 
             if cmd == "bag":
-                target = await _smart_target(bot, message, args, fallback_author=True)
-                return await bag_logic(ctx, target)
+                target = None
 
+                if message.mentions:
+                    target = message.mentions[0]
+                elif args:
+                    target = await _resolve_user(bot, message, args[0])
+                elif message.reference:
+                    ref = message.reference.resolved
+                    if ref:
+                        target = ref.author
+
+                return await bag_logic(ctx, target)
             if cmd == "shop":
                 if not args:
                     return await reply("❌ Cú pháp: .shop <channel_id>")
@@ -495,6 +507,8 @@ async def setup(bot):
                 target = await _smart_target(bot, message, args, fallback_author=True)
                 embed = get_profile_embed(bot, target)
                 return await ctx.send(embed=embed)
+            if cmd == "prayer":
+                return await prayer_logic(ctx)
 
             if cmd == "help":
                 await help_prefix(message)
