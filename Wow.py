@@ -5,7 +5,7 @@ import json
 import os
 import random
 from copy import deepcopy
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import discord
 
@@ -99,6 +99,14 @@ def rank_leq(rank: str, cap_rank: str) -> bool:
 
 
 def get_turn_rank_cap(turn: int) -> str:
+    """
+    1      -> limited
+    2-4    -> toi_thuong
+    5-7    -> truyen_thuyet
+    8-10   -> huyen_thoai
+    11-14  -> anh_hung
+    15+    -> thuong
+    """
     if turn <= 1:
         return "limited"
     if turn <= 4:
@@ -123,6 +131,11 @@ def hp_bar(current: int, max_hp: int, length: int = 12) -> str:
 
 def get_user_obj(ctx):
     return ctx.user if hasattr(ctx, "user") else ctx.author
+
+
+def waifu_display_name(waifu_data: dict, waifu_id: str) -> str:
+    meta = waifu_data.get(waifu_id, {})
+    return str(meta.get("name") or meta.get("display_name") or waifu_id)
 
 
 async def send_like(ctx, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None, view=None, ephemeral: bool = False):
@@ -295,7 +308,7 @@ def build_combatant(user_id: str, waifu_id: str, inv: dict, waifu_data: dict, lu
     love = get_love_value(user_inv, waifu_id)
     level = resolve_level_from_love(love)
 
-    rank = waifu_data.get(waifu_id, {}).get("rank", "thuong").lower()
+    rank = str(waifu_data.get(waifu_id, {}).get("rank", "thuong")).lower()
     base_hp = RANK_HP.get(rank, 10)
     base_dmg = RANK_DMG.get(rank, 2)
 
@@ -307,7 +320,7 @@ def build_combatant(user_id: str, waifu_id: str, inv: dict, waifu_data: dict, lu
     return {
         "user_id": user_id,
         "waifu_id": waifu_id,
-        "name": waifu_id,
+        "name": waifu_display_name(waifu_data, waifu_id),
         "rank": rank,
         "love": love,
         "level": level,
@@ -367,6 +380,9 @@ class FightSession:
         self.affected_pairs: set[Tuple[str, str]] = set()
         self.draw = False
 
+    def completed_turn(self) -> int:
+        return max(1, self.turn - 1)
+
     def is_over(self) -> bool:
         a_alive = any(c["hp"] > 0 for c in self.team_a)
         b_alive = any(c["hp"] > 0 for c in self.team_b)
@@ -415,13 +431,13 @@ class FightSession:
             crit_type = random.choice(["damage", "heal"])
 
         if is_crit and crit_type == "heal":
-            heal_amount = int(attacker["max_hp"] * 0.20)
+            before_hp = attacker["hp"]
+            healed_hp = min(attacker["max_hp"], int(attacker["hp"] * 1.5))
             if is_combo:
-                heal_amount = int(heal_amount * 1.3)
+                healed_hp = min(attacker["max_hp"], int(attacker["hp"] + (healed_hp - attacker["hp"]) * 1.3))
 
-            before = attacker["hp"]
-            attacker["hp"] = min(attacker["max_hp"], attacker["hp"] + heal_amount)
-            gained = attacker["hp"] - before
+            attacker["hp"] = healed_hp
+            gained = attacker["hp"] - before_hp
 
             if is_combo:
                 logs.append(f"⚡🔥 **COMBO HEAL!** **{attacker['name']}** hồi thêm `+{gained}` HP")
@@ -470,7 +486,7 @@ class FightSession:
         else:
             first_side, second_side = "b", "a"
 
-        self.add_log(f"🎯 **Round {self.turn}**: {self.side_name(first_side)} đi trước.")
+        self.add_log(f"🎯 **Round {self.completed_turn()}**: {self.side_name(first_side)} đi trước.")
 
         for side in (first_side, second_side):
             if self.is_over():
@@ -506,7 +522,7 @@ class FightSession:
 
         emb = discord.Embed(
             title=title,
-            color=0xFF4D4D if self.turn < MAX_ROUNDS else 0xFFD700,
+            color=0xFF4D4D if self.completed_turn() < MAX_ROUNDS else 0xFFD700,
         )
 
         emb.add_field(
@@ -527,7 +543,7 @@ class FightSession:
             inline=False,
         )
 
-        emb.set_footer(text=f"Turn hiện tại: {self.turn}")
+        emb.set_footer(text=f"Turn hiện tại: {self.completed_turn()}")
         return emb
 
     def commit_and_sync(self) -> None:
@@ -565,7 +581,7 @@ class FightSession:
 
         winner_id = self.side_id(winner_side)
         loser_id = self.defender_id if winner_side == "a" else self.challenger_id
-        cap_rank = get_turn_rank_cap(max(1, self.turn))
+        cap_rank = get_turn_rank_cap(self.completed_turn())
 
         chosen, note = self.transfer_waifu(loser_id, winner_id, cap_rank)
         if chosen:
@@ -577,17 +593,35 @@ class FightSession:
 
 
 async def fight_logic(
-    ctx,
-    opponent: discord.Member | discord.User,
+    ctx: Any,
+    opponent: Any,
     *,
     team_a: Optional[Sequence[str]] = None,
     team_b: Optional[Sequence[str]] = None,
 ):
+    """
+    Dùng được từ slash.py hoặc prefix.py.
+
+    Ví dụ:
+        await fight_logic(interaction, target_user)
+        await fight_logic(ctx, target_user, team_a=["zero_two"], team_b=["rem"])
+    """
     challenger = get_user_obj(ctx)
     defender = opponent
 
+    if defender is None:
+        return await send_like(
+            ctx,
+            "❌ Bạn phải chọn một người để khiêu chiến.",
+            ephemeral=True if hasattr(ctx, "response") else False,
+        )
+
     if challenger.id == defender.id:
-        return await send_like(ctx, "❌ Bạn không thể tự khiêu chiến chính mình.", ephemeral=True if hasattr(ctx, "response") else False)
+        return await send_like(
+            ctx,
+            "❌ Bạn không thể tự khiêu chiến chính mình.",
+            ephemeral=True if hasattr(ctx, "response") else False,
+        )
 
     inv = load_json(INV_FILE)
     waifu_data = load_json(WAIFU_FILE)
@@ -597,17 +631,33 @@ async def fight_logic(
     defender_id = str(defender.id)
 
     if challenger_id not in inv:
-        return await send_like(ctx, "❌ Bạn chưa có waifu nào trong inventory.", ephemeral=True if hasattr(ctx, "response") else False)
+        return await send_like(
+            ctx,
+            "❌ Bạn chưa có waifu nào trong inventory.",
+            ephemeral=True if hasattr(ctx, "response") else False,
+        )
     if defender_id not in inv:
-        return await send_like(ctx, "❌ Đối thủ chưa có waifu nào trong inventory.", ephemeral=True if hasattr(ctx, "response") else False)
+        return await send_like(
+            ctx,
+            "❌ Đối thủ chưa có waifu nào trong inventory.",
+            ephemeral=True if hasattr(ctx, "response") else False,
+        )
 
     resolved_team_a = normalize_team_ids(challenger_id, inv, team_data, team_a)
-    resolved_team_b = normalize_team_ids(defender_id, inv, team_data, team_b)
+    resolved_team_b = normalize_team_ids(defender_id, inv, team_b)
 
     if not resolved_team_a:
-        return await send_like(ctx, "❌ Bạn chưa có team hợp lệ để khiêu chiến.", ephemeral=True if hasattr(ctx, "response") else False)
+        return await send_like(
+            ctx,
+            "❌ Bạn chưa có team hợp lệ để khiêu chiến.",
+            ephemeral=True if hasattr(ctx, "response") else False,
+        )
     if not resolved_team_b:
-        return await send_like(ctx, "❌ Đối thủ chưa có team hợp lệ để khiêu chiến.", ephemeral=True if hasattr(ctx, "response") else False)
+        return await send_like(
+            ctx,
+            "❌ Đối thủ chưa có team hợp lệ để khiêu chiến.",
+            ephemeral=True if hasattr(ctx, "response") else False,
+        )
 
     luck_a = 1.0
     luck_b = 1.0
@@ -642,9 +692,13 @@ async def fight_logic(
     message = await send_like(ctx, content="⚔️ Chuẩn bị khai chiến...", embed=session.render_embed())
     await asyncio.sleep(1)
 
-    while session.turn <= MAX_ROUNDS and not session.is_over():
+    while session.completed_turn() <= MAX_ROUNDS and not session.is_over():
         session.play_round()
-        await edit_like(message, embed=session.render_embed())
+        try:
+            await edit_like(message, embed=session.render_embed())
+        except Exception as e:
+            debug("edit failed:", e)
+            break
         await asyncio.sleep(STEP_DELAY)
 
     winner_side = session.get_winner_side()
@@ -652,8 +706,10 @@ async def fight_logic(
     if winner_side is None:
         session.draw = True
         save_json(INV_FILE, original_inv)
-        await edit_like(message, content=None, embed=session.render_embed(), view=None)
-        await send_like(ctx, "🤝 Trận đấu hòa! Không ai mất gì.", ephemeral=False)
+        try:
+            await edit_like(message, content=None, embed=session.render_embed(), view=None)
+        except Exception as e:
+            debug("final draw edit failed:", e)
         return
 
     final_logs = session.apply_final_rewards()
@@ -675,13 +731,10 @@ async def fight_logic(
         inline=False,
     )
 
-    await edit_like(message, content=None, embed=result_embed, view=None)
-
-    await send_like(
-        ctx,
-        f"🏆 **{winner_name}** chiến thắng! `{get_turn_rank_cap(max(1, session.turn))}` là rank cap phần thưởng.",
-        ephemeral=False,
-    )
+    try:
+        await edit_like(message, content=None, embed=result_embed, view=None)
+    except Exception as e:
+        debug("final win edit failed:", e)
 
 
 def debug_snapshot(user_id: str):
