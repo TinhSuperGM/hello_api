@@ -284,7 +284,7 @@ async def setup(bot):
                 return await select_waifu_logic(ctx, args[0])
 
             if cmd == "waifu-list":
-                target = _resolve_user(bot, message, args[0]) if args else None
+                target = await _resolve_user(bot, message, args[0]) if args else None
                 return await waifu_list_run(ctx, target)
 
             if cmd == "view-waifu":
@@ -293,7 +293,7 @@ async def setup(bot):
                 return await view_waifu_logic(message.author, reply, reply_embed, args[0])
 
             if cmd == "bag":
-                target = _resolve_user(bot, message, args[0]) if args else None
+                target = await _resolve_user(bot, message, args[0]) if args else None
                 return await bag_logic(ctx, target or message.author)
 
             if cmd == "shop":
@@ -349,7 +349,7 @@ async def setup(bot):
 
             if cmd == "give":
                 if len(args) < 2:
-                    return await reply("❌ Cú pháp: .give <gold|waifu> <user> ...")
+                    return await reply("❌ Cú pháp: .give <gold|waifu> <user> <amount>")
                 type_ = args[0]
                 target = await _resolve_user(bot, message, args[1])
                 if target is None:
