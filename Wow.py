@@ -1,801 +1,703 @@
-slash.py:
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
-
-import discord
-from discord import app_commands
-
-from Commands.bag import bag_logic
-from Commands.baucua import baucua_logic
-from Commands.code import code_logic
-from Commands.coinflip import coinflip_logic
-from Commands.couple import (
-    couple_cancel_logic,
-    couple_gift_logic,
-    couple_info_logic,
-    couple_logic,
-    couple_release_logic,
-    start_couple_loop,
-)
-from Commands.daily import daily_logic
-from Commands.dau_gia import (
-    AUCTION_FILE,
-    BidView,
-    dau_gia_logic,
-    load_json as load_auction_json,
-)
-from Commands.gift_waifu_ad import gift_waifu_ad_logic
-from Commands.give import gift_logic
-from Commands.gold import gold_logic
-from Commands.huy_dau_gia import huy_dau_gia_logic
-from Commands.roll_waifu import roll_waifu_logic
-from Commands.select_waifu import select_waifu_logic
-from Commands.sell import sell_logic
-from Commands.setup import setup_channel_logic
-from Commands.shop import ShopView, send_shop_embed_logic
-from Commands.use import use_logic
-from Commands.view_waifu import view_waifu_logic
-from Commands.waifu_list import waifu_list_run
-from Commands.work import work_run
-from Commands.help import help_slash
-from Commands.profile import get_profile_embed
-from Commands.prayer import prayer_logic
-
-
-def _resolve_user(user: Optional[discord.User]) -> Optional[discord.User]:
-    return user
-
-
-async def _send_embed_like(interaction: discord.Interaction, embed_data: dict):
-    embed = discord.Embed(
-        title=embed_data.get("title", ""),
-        description=embed_data.get("description", ""),
-        color=discord.Color.pink(),
-    )
-    image = embed_data.get("image")
-    footer = embed_data.get("footer")
-    if image:
-        embed.set_image(url=image)
-    if footer:
-        embed.set_footer(text=footer)
-    return await interaction.response.send_message(embed=embed)
-
-
-async def setup(bot):
-    """
-    Register slash commands and startup hooks.
-    """
-    if getattr(bot, "_slash_commands_ready", False):
-        return
-    bot._slash_commands_ready = True
-
-    # Persistent views / boot-time hooks
-    try:
-        bot.add_view(ShopView())
-    except Exception:
-        pass
-
-    try:
-        auctions = load_auction_json(AUCTION_FILE)
-        for auction_id in auctions.keys():
-            try:
-                bot.add_view(BidView(auction_id))
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    if not getattr(bot, "_couple_loop_started", False):
-        bot._couple_loop_started = True
-        asyncio.create_task(start_couple_loop(bot))
-
-    # ===== setup =====
-    @bot.tree.command(name="setup", description="Thiết lập kênh đấu giá hoặc BXH")
-    @app_commands.rename(type_="type")
-    @app_commands.describe(type_="auction hoặc ranking", channel_id="ID hoặc mention của kênh")
-    async def setup_cmd(interaction: discord.Interaction, type_: str, channel_id: str):
-        await setup_channel_logic(interaction, type_, channel_id)
-
-    # ===== gold =====
-    @bot.tree.command(name="gold", description="Xem số gold của bạn hoặc của người khác")
-    @app_commands.describe(user="Người cần xem gold")
-    async def gold_cmd(interaction: discord.Interaction, user: Optional[discord.Member] = None):
-        await gold_logic(interaction, user)
-
-    # ===== daily / work =====
-    @bot.tree.command(name="daily", description="Nhận gold hằng ngày")
-    async def daily_cmd(interaction: discord.Interaction):
-        await daily_logic(interaction)
-
-    @bot.tree.command(name="work", description="Cho waifu đi làm để kiếm gold")
-    async def work_cmd(interaction: discord.Interaction):
-        await work_run(interaction)
-
-    # ===== roll waifu =====
-    @bot.tree.command(name="roll-waifu", description="Roll waifu")
-    @app_commands.describe(mode="free, 200, 500, 1000, 2000")
-    async def roll_waifu_cmd(interaction: discord.Interaction, mode: str):
-        await roll_waifu_logic(interaction, mode)
-
-    # ===== select waifu =====
-    @bot.tree.command(name="select-waifu", description="Chọn waifu mặc định")
-    @app_commands.describe(waifu_id="ID waifu")
-    async def select_waifu_cmd(interaction: discord.Interaction, waifu_id: str):
-        await select_waifu_logic(interaction, waifu_id)
-
-    # ===== waifu list / view / bag =====
-    @bot.tree.command(name="waifu-list", description="Xem danh sách waifu của bạn hoặc người khác")
-    @app_commands.describe(user="Người cần xem waifu")
-    async def waifu_list_cmd(interaction: discord.Interaction, user: Optional[discord.Member] = None):
-        await waifu_list_run(interaction, user)
-
-    @bot.tree.command(name="view-waifu", description="Xem chi tiết waifu")
-    @app_commands.describe(waifu_id="ID waifu")
-    async def view_waifu_cmd(interaction: discord.Interaction, waifu_id: str):
-        async def send(msg, ephemeral=False):
-            return await interaction.response.send_message(msg, ephemeral=ephemeral)
-
-        async def send_embed(embed_data):
-            return await _send_embed_like(interaction, embed_data)
-
-        await view_waifu_logic(interaction.user, send, send_embed, waifu_id)
-
-    @bot.tree.command(name="bag", description="Xem kho đồ của bạn hoặc người khác")
-    @app_commands.describe(user="Người cần xem kho đồ")
-    async def bag_cmd(interaction: discord.Interaction, user: Optional[discord.Member] = None):
-        await bag_logic(interaction, user or interaction.user)
-
-    # ===== shop / use / sell =====
-    @bot.tree.command(name="shop", description="Gửi shop waifu vào một kênh")
-    @app_commands.describe(channel_id="ID hoặc mention của kênh")
-    async def shop_cmd(interaction: discord.Interaction, channel_id: str):
-        await send_shop_embed_logic(interaction, channel_id)
-
-    @bot.tree.command(name="use", description="Dùng waifu hoặc vật phẩm")
-    @app_commands.describe(
-        waifu_id="Waifu muốn đưa vào bộ sưu tập",
-        item_id="Vật phẩm muốn dùng",
-        qty="Số lượng vật phẩm",
-    )
-    async def use_cmd(
-        interaction: discord.Interaction,
-        waifu_id: Optional[str] = None,
-        item_id: Optional[str] = None,
-        qty: int = 1,
-    ):
-        await use_logic(interaction.user, lambda msg, ephemeral=False: interaction.response.send_message(msg, ephemeral=ephemeral), waifu_id, item_id, qty)
-
-    @bot.tree.command(name="sell", description="Bán waifu")
-    @app_commands.describe(waifu_id="ID waifu", source="bag hoặc collection", amount="Số lượng")
-    async def sell_cmd(
-        interaction: discord.Interaction,
-        waifu_id: str,
-        source: Optional[str] = None,
-        amount: int = 1,
-    ):
-        await sell_logic(interaction, waifu_id, source, amount)
-
-    @bot.tree.command(name="give", description="Tặng gold hoặc waifu cho người khác")
-    @app_commands.rename(type_="type")
-    @app_commands.describe(
-        type_="gold hoặc waifu",
-        user="Người nhận",
-        amount="Số gold",
-        waifu_id="ID waifu",
-    )
-    async def give_cmd(
-        interaction: discord.Interaction,
-        type_: str,
-        user: discord.Member,
-        amount: Optional[int] = None,
-        waifu_id: Optional[str] = None,
-    ):
-        await gift_logic(interaction, type_, user, amount, waifu_id)
-
-    # ===== couple =====
-    @bot.tree.command(name="couple", description="Tỏ tình với người khác")
-    @app_commands.describe(user="Người bạn muốn tỏ tình")
-    async def couple_cmd(interaction: discord.Interaction, user: discord.Member):
-        await couple_logic(bot, interaction, user)
-
-    @bot.tree.command(name="couple-release", description="Chia tay người yêu")
-    async def couple_release_cmd(interaction: discord.Interaction):
-        await couple_release_logic(bot, interaction)
-
-    @bot.tree.command(name="couple-cancel", description="Hủy yêu cầu chia tay")
-    async def couple_cancel_cmd(interaction: discord.Interaction):
-        await couple_cancel_logic(interaction)
-
-    @bot.tree.command(name="couple-info", description="Xem thông tin couple")
-    async def couple_info_cmd(interaction: discord.Interaction):
-        await couple_info_logic(interaction)
-
-    @bot.tree.command(name="couple-gift", description="Tặng quà cho người yêu")
-    @app_commands.describe(item="rose hoặc cake")
-    async def couple_gift_cmd(interaction: discord.Interaction, item: str):
-        await couple_gift_logic(interaction, item)
-
-    # ===== games =====
-    @bot.tree.command(name="coinflip", description="Đánh coinflip")
-    @app_commands.describe(choice="ngua hoặc sap", amount="Số gold cược")
-    async def coinflip_cmd(interaction: discord.Interaction, choice: str, amount: int):
-        await coinflip_logic(interaction, choice, amount)
-
-    @bot.tree.command(name="baucua", description="Chơi bầu cua")
-    @app_commands.describe(choice="nai/bau/ga/ca/cua/tom", amount="Số gold cược")
-    async def baucua_cmd(interaction: discord.Interaction, choice: str, amount: int):
-        await baucua_logic(interaction, choice, amount)
-
-    @bot.tree.command(name="code", description="Nhập code nhận quà")
-    @app_commands.describe(code="Mã code")
-    async def code_cmd(interaction: discord.Interaction, code: str):
-        await code_logic(interaction, code)
-
-    # ===== auction =====
-    @bot.tree.command(name="dau-gia", description="Đăng waifu lên sàn đấu giá")
-    @app_commands.describe(
-        waifu_id="ID waifu",
-        min_price="Giá khởi điểm",
-        step="Bước giá",
-    )
-    async def dau_gia_cmd(interaction: discord.Interaction, waifu_id: str, min_price: int, step: int):
-        await dau_gia_logic(interaction, waifu_id, min_price, step)
-
-    @bot.tree.command(name="huy-dau-gia", description="Hủy buổi đấu giá")
-    @app_commands.describe(auction_id="ID đấu giá")
-    async def huy_dau_gia_cmd(interaction: discord.Interaction, auction_id: str):
-        await huy_dau_gia_logic(interaction, auction_id)
-
-    # ===== admin gift =====
-    @bot.tree.command(name="gift-waifu-ad", description="Admin tặng waifu")
-    @app_commands.describe(waifu_id="ID waifu", user="Người nhận")
-    async def gift_waifu_ad_cmd(
-        interaction: discord.Interaction,
-        waifu_id: str,
-        user: Optional[discord.Member] = None,
-    ):
-        await gift_waifu_ad_logic(interaction, waifu_id, user)
-    #========== help ==========
-    @bot.tree.command(name="help", description="Xem danh sách lệnh")
-    async def help_cmd(interaction: discord.Interaction):
-        await help_slash(interaction)
-
-    @bot.tree.command(name="profile", description="Xem hồ sơ")
-    @app_commands.describe(user="Người cần xem profile")
-    async def profile_cmd(
-        interaction: discord.Interaction,
-        user: Optional[discord.Member] = None,
-    ):
-        target = user or interaction.user
-        embed = get_profile_embed(bot, target)
-        await interaction.response.send_message(embed=embed)
-    @bot.tree.command(name="pray")
-    async def prayer(interaction: discord.Interaction):
-        ctx = interaction
-        await prayer_logic(ctx)
-prefix.py:
-from __future__ import annotations
-
-import asyncio
-import shlex
-from typing import Optional
+import json
+import os
+import random
+from copy import deepcopy
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import discord
 
-from Commands.bag import bag_logic
-from Commands.baucua import baucua_logic
-from Commands.code import code_logic
-from Commands.coinflip import coinflip_logic
-from Commands.couple import (
-    couple_cancel_logic,
-    couple_gift_logic,
-    couple_info_logic,
-    couple_logic,
-    couple_release_logic,
-)
-from Commands.daily import daily_logic
-from Commands.dau_gia import dau_gia_logic
-from Commands.gift_waifu_ad import gift_waifu_ad_logic
-from Commands.give import gift_logic
-from Commands.gold import gold_logic
-from Commands.huy_dau_gia import huy_dau_gia_logic
-from Commands.roll_waifu import roll_waifu_logic
-from Commands.select_waifu import select_waifu_logic
-from Commands.sell import sell_logic
-from Commands.setup import setup_channel_logic
-from Commands.shop import send_shop_embed_logic
-from Commands.use import use_logic
-from Commands.view_waifu import view_waifu_logic
-from Commands.waifu_list import waifu_list_run
-from Commands.work import work_run
-from Commands.help import help_prefix
-from Commands.profile import get_profile_embed
-from Commands.prayer import prayer_logic
-
-
-def _normalize_name(name: str) -> str:
-    return name.strip().lower().replace("_", "-")
-
-
-def _parse_mention_id(token: str) -> Optional[int]:
-    if not token:
-        return None
-    token = token.strip()
-    if token.startswith("<@") and token.endswith(">"):
-        token = token[2:-1]
-        if token.startswith("!"):
-            token = token[1:]
-    if token.startswith("<#") and token.endswith(">"):
-        token = token[2:-1]
+# ===== OPTIONAL LEVEL SYNC =====
+try:
+    from Data.level import sync_one as _sync_one
+except Exception:
     try:
-        return int(token)
+        from Data.level import check_and_update_level as _sync_one
     except Exception:
-        return None
+        def _sync_one(user_id: str, waifu_id: str):
+            return None
 
 
-async def _resolve_user(bot, message: discord.Message, token: Optional[str]) -> Optional[discord.abc.User]:
-    if not token:
-        return None
+# ===== FILE PATHS =====
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+INV_FILE = os.path.join(BASE_DIR, "Data", "inventory.json")
+LEVEL_FILE = os.path.join(BASE_DIR, "Data", "level.json")
+WAIFU_FILE = os.path.join(BASE_DIR, "Data", "waifu_data.json")
+TEAM_FILE = os.path.join(BASE_DIR, "Data", "team.json")
 
-    uid = _parse_mention_id(token)
-    if uid is None:
-        return None
+# ===== DEBUG =====
+DEBUG_FIGHT = False
+MAX_ROUNDS = 30
+STEP_DELAY = 1.0
+MAX_LOG_LINES = 8
+MAX_TEAM_SIZE = 3
+LOVE_DROP_RATE = 0.40
+LOVE_RESET_ON_TRANSFER = True
 
-    if message.guild:
-        member = message.guild.get_member(uid)
-        if member:
-            return member
+# ===== RANK ORDER =====
+RANK_ORDER = [
+    "thuong",
+    "anh_hung",
+    "huyen_thoai",
+    "truyen_thuyet",
+    "toi_thuong",
+    "limited",
+]
 
-    user = bot.get_user(uid)
-    if user:
-        return user
+RANK_HP = {
+    "thuong": 10,
+    "anh_hung": 50,
+    "huyen_thoai": 100,
+    "truyen_thuyet": 300,
+    "toi_thuong": 600,
+    "limited": 900,
+}
 
+RANK_DMG = {
+    "thuong": 2,
+    "anh_hung": 4,
+    "huyen_thoai": 6,
+    "truyen_thuyet": 10,
+    "toi_thuong": 12,
+    "limited": 15,
+}
+
+
+# ===== JSON HELPERS =====
+def load_json(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
     try:
-        return await bot.fetch_user(uid)
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
-        return None
+        return {}
 
 
-async def _resolve_replied_user(message: discord.Message) -> Optional[discord.abc.User]:
-    if not message.reference:
-        return None
+def save_json(path: str, data: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
+
+# ===== SMALL HELPERS =====
+def debug(*args):
+    if DEBUG_FIGHT:
+        print("[FIGHT DEBUG]", *args)
+
+
+def rank_index(rank: str) -> int:
     try:
-        if message.reference.resolved and isinstance(message.reference.resolved, discord.Message):
-            return message.reference.resolved.author
+        return RANK_ORDER.index((rank or "thuong").lower())
+    except ValueError:
+        return 0
 
-        if message.reference.message_id:
-            ref_msg = await message.channel.fetch_message(message.reference.message_id)
-            return ref_msg.author
-    except Exception:
+
+def rank_leq(rank: str, cap_rank: str) -> bool:
+    return rank_index(rank) <= rank_index(cap_rank)
+
+
+def get_turn_rank_cap(turn: int) -> str:
+    if turn <= 1:
+        return "limited"
+    if turn <= 4:
+        return "toi_thuong"
+    if turn <= 7:
+        return "truyen_thuyet"
+    if turn <= 10:
+        return "huyen_thoai"
+    if turn <= 14:
+        return "anh_hung"
+    return "thuong"
+
+
+def hp_bar(current: int, max_hp: int, length: int = 12) -> str:
+    if max_hp <= 0:
+        return "░" * length
+    ratio = max(0.0, min(1.0, current / max_hp))
+    filled = int(round(ratio * length))
+    filled = max(0, min(length, filled))
+    return "█" * filled + "░" * (length - filled)
+
+
+def get_user_obj(ctx):
+    return ctx.user if hasattr(ctx, "user") else ctx.author
+
+
+async def send_like(ctx, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None, view=None, ephemeral: bool = False):
+    if hasattr(ctx, "response") and hasattr(ctx.response, "send_message"):
+        is_done = getattr(ctx.response, "is_done", None)
+        if callable(is_done) and is_done():
+            if hasattr(ctx, "followup") and hasattr(ctx.followup, "send"):
+                return await ctx.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
+            return await ctx.send(content=content, embed=embed, view=view)
+
+        await ctx.response.send_message(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        try:
+            return await ctx.original_response()
+        except Exception:
+            return None
+
+    return await ctx.send(content=content, embed=embed, view=view)
+
+
+async def edit_like(message: discord.Message, *, content: Optional[str] = None, embed: Optional[discord.Embed] = None, view=None):
+    return await message.edit(content=content, embed=embed, view=view)
+
+
+def get_inv_user(inv: dict, user_id: str) -> dict:
+    return inv.setdefault(user_id, {"waifus": {}, "bag": {}, "bag_item": {}, "default_waifu": None})
+
+
+def get_love_value(user_inv: dict, waifu_id: str) -> int:
+    val = user_inv.get("waifus", {}).get(waifu_id, 0)
+    if isinstance(val, int):
+        return val
+    if isinstance(val, dict):
+        return int(val.get("love", 0))
+    return 0
+
+
+def set_love_value(user_inv: dict, waifu_id: str, love: int) -> None:
+    user_inv.setdefault("waifus", {})
+    user_inv["waifus"][waifu_id] = max(0, int(love))
+
+
+def resolve_level_from_love(love: int) -> int:
+    return max(1, love // 100)
+
+
+def get_team_source(team_data: dict, user_id: str) -> Sequence[str]:
+    raw = team_data.get(user_id)
+    if raw is None:
+        return []
+
+    if isinstance(raw, list):
+        return raw
+
+    if isinstance(raw, dict):
+        for key in ("team", "waifus", "list", "members"):
+            if isinstance(raw.get(key), list):
+                return raw[key]
+
+    return []
+
+
+def normalize_team_ids(user_id: str, inv: dict, team_data: dict, explicit_team: Optional[Sequence[str]] = None) -> List[str]:
+    user_inv = inv.get(user_id, {})
+    waifus = user_inv.get("waifus", {})
+
+    source = list(explicit_team or [])
+    if not source:
+        source = list(get_team_source(team_data, user_id))
+
+    if not source:
+        default_waifu = user_inv.get("default_waifu")
+        if default_waifu:
+            source = [default_waifu]
+        elif isinstance(waifus, dict) and waifus:
+            source = [next(iter(waifus.keys()))]
+
+    out: List[str] = []
+    seen = set()
+    for wid in source:
+        if not wid or wid in seen:
+            continue
+        if wid in waifus:
+            out.append(wid)
+            seen.add(wid)
+        if len(out) >= MAX_TEAM_SIZE:
+            break
+
+    return out
+
+
+def trim_lines(lines: List[str], limit: int = MAX_LOG_LINES) -> List[str]:
+    if len(lines) <= limit:
+        return lines
+    return lines[-limit:]
+
+
+def get_battle_crit_chance(luck: float) -> float:
+    bonus = max(0.0, luck - 1.0)
+    return min(0.30, 0.05 + bonus * 0.01)
+
+
+def get_dodge_chance(attacker_speed: int, defender_speed: int) -> float:
+    total = max(1, attacker_speed + defender_speed)
+    ratio = defender_speed / total
+    return min(0.25, 0.05 + ratio * 0.20)
+
+
+def get_initiative_score(team: List[dict]) -> float:
+    if not team:
+        return 0.0
+    total_speed = sum(max(1, c["speed"]) for c in team if c["hp"] > 0)
+    return total_speed + random.uniform(0, max(1.0, total_speed * 0.15))
+
+
+def choose_weighted_attacker(team: List[dict]) -> Optional[dict]:
+    living = [c for c in team if c["hp"] > 0]
+    if not living:
         return None
+    weights = [max(1, c["speed"]) for c in living]
+    return random.choices(living, weights=weights, k=1)[0]
 
-    return None
+
+def choose_random_target(team: List[dict]) -> Optional[dict]:
+    living = [c for c in team if c["hp"] > 0]
+    if not living:
+        return None
+    return random.choice(living)
 
 
-async def _smart_target(
-    bot,
-    message: discord.Message,
-    args,
+def choose_reward_waifu(
+    inv: dict,
+    owner_id: str,
+    waifu_data: dict,
+    cap_rank: str,
     *,
-    fallback_author: bool = True,
+    exclude: Optional[set] = None,
+) -> Optional[str]:
+    exclude = exclude or set()
+    user_inv = inv.get(owner_id, {})
+    waifus = user_inv.get("waifus", {})
+    pool = []
+
+    for wid in waifus.keys():
+        if wid in exclude:
+            continue
+        rank = waifu_data.get(wid, {}).get("rank", "thuong")
+        if rank_leq(rank, cap_rank):
+            pool.append(wid)
+
+    if not pool:
+        return None
+
+    return random.choice(pool)
+
+
+def apply_love_drop(user_inv: dict, waifu_id: str) -> int:
+    old_love = get_love_value(user_inv, waifu_id)
+    new_love = int(old_love * (1 - LOVE_DROP_RATE))
+    set_love_value(user_inv, waifu_id, new_love)
+    return new_love
+
+
+def reset_waifu_progress(user_inv: dict, waifu_id: str) -> None:
+    if LOVE_RESET_ON_TRANSFER:
+        set_love_value(user_inv, waifu_id, 0)
+
+
+def build_combatant(user_id: str, waifu_id: str, inv: dict, waifu_data: dict, luck: float) -> dict:
+    user_inv = get_inv_user(inv, user_id)
+    love = get_love_value(user_inv, waifu_id)
+    level = resolve_level_from_love(love)
+
+    rank = waifu_data.get(waifu_id, {}).get("rank", "thuong").lower()
+    base_hp = RANK_HP.get(rank, 10)
+    base_dmg = RANK_DMG.get(rank, 2)
+
+    max_hp = base_hp * max(1, level) + min(love // 10, 1000)
+    damage = max(1, int(level * base_dmg * 3))
+    speed = max(1, int(level * base_dmg + love // 20))
+    crit_chance = get_battle_crit_chance(luck)
+
+    return {
+        "user_id": user_id,
+        "waifu_id": waifu_id,
+        "name": waifu_id,
+        "rank": rank,
+        "love": love,
+        "level": level,
+        "max_hp": max_hp,
+        "hp": max_hp,
+        "damage": damage,
+        "speed": speed,
+        "crit_chance": crit_chance,
+        "combo_ready": False,
+        "alive": True,
+    }
+
+
+def team_status_text(team: List[dict]) -> str:
+    if not team:
+        return "Không có waifu."
+
+    out = []
+    for c in team:
+        hp = max(0, c["hp"])
+        status = "💀" if hp <= 0 else "❤️"
+        out.append(
+            f"{status} **{c['name']}** | HP: `{hp}/{c['max_hp']}` | LV: `{c['level']}` | SPD: `{c['speed']}`\n"
+            f"`{hp_bar(hp, c['max_hp'])}`"
+        )
+    return "\n".join(out)
+
+
+class FightSession:
+    def __init__(
+        self,
+        challenger_name: str,
+        defender_name: str,
+        challenger_id: str,
+        defender_id: str,
+        team_a_ids: List[str],
+        team_b_ids: List[str],
+        inv: dict,
+        waifu_data: dict,
+        luck_a: float = 1.0,
+        luck_b: float = 1.0,
+    ):
+        self.challenger_name = challenger_name
+        self.defender_name = defender_name
+        self.challenger_id = challenger_id
+        self.defender_id = defender_id
+        self.inv = inv
+        self.waifu_data = waifu_data
+        self.luck_a = luck_a
+        self.luck_b = luck_b
+
+        self.team_a = [build_combatant(challenger_id, wid, inv, waifu_data, luck_a) for wid in team_a_ids]
+        self.team_b = [build_combatant(defender_id, wid, inv, waifu_data, luck_b) for wid in team_b_ids]
+
+        self.turn = 1
+        self.logs: List[str] = []
+        self.affected_pairs: set[Tuple[str, str]] = set()
+        self.draw = False
+
+    def is_over(self) -> bool:
+        a_alive = any(c["hp"] > 0 for c in self.team_a)
+        b_alive = any(c["hp"] > 0 for c in self.team_b)
+        return not (a_alive and b_alive)
+
+    def side_name(self, side: str) -> str:
+        return self.challenger_name if side == "a" else self.defender_name
+
+    def side_id(self, side: str) -> str:
+        return self.challenger_id if side == "a" else self.defender_id
+
+    def total_speed(self, side: str) -> float:
+        team = self.team_a if side == "a" else self.team_b
+        return sum(max(1, c["speed"]) for c in team if c["hp"] > 0)
+
+    def choose_attacker(self, side: str) -> Optional[dict]:
+        team = self.team_a if side == "a" else self.team_b
+        return choose_weighted_attacker(team)
+
+    def choose_defender(self, side: str) -> Optional[dict]:
+        team = self.team_b if side == "a" else self.team_a
+        return choose_random_target(team)
+
+    def add_log(self, line: str) -> None:
+        self.logs.append(line)
+        debug(line)
+
+    def attack(self, attacker: dict, defender: dict) -> List[str]:
+        logs: List[str] = []
+
+        if attacker["hp"] <= 0 or defender["hp"] <= 0:
+            return logs
+
+        dodge_chance = get_dodge_chance(attacker["speed"], defender["speed"])
+        if random.random() < dodge_chance:
+            defender["combo_ready"] = True
+            logs.append(f"💨 **{defender['name']}** đã né đòn của **{attacker['name']}**!")
+            return logs
+
+        raw_damage = int(attacker["damage"] * random.uniform(0.90, 1.10))
+        is_crit = random.random() < attacker["crit_chance"]
+        is_combo = attacker["combo_ready"] and is_crit
+
+        crit_type = None
+        if is_crit:
+            crit_type = random.choice(["damage", "heal"])
+
+        if is_crit and crit_type == "heal":
+            heal_amount = int(attacker["max_hp"] * 0.20)
+            if is_combo:
+                heal_amount = int(heal_amount * 1.3)
+
+            before = attacker["hp"]
+            attacker["hp"] = min(attacker["max_hp"], attacker["hp"] + heal_amount)
+            gained = attacker["hp"] - before
+
+            if is_combo:
+                logs.append(f"⚡🔥 **COMBO HEAL!** **{attacker['name']}** hồi thêm `+{gained}` HP")
+            else:
+                logs.append(f"🫀 **{attacker['name']}** đã hồi máu cho bản thân và nhận được `+{gained}` HP")
+
+            attacker["combo_ready"] = False
+            return logs
+
+        if is_crit and crit_type == "damage":
+            raw_damage = int(raw_damage * 1.5)
+            if is_combo:
+                raw_damage = int(raw_damage * 1.3)
+
+        defender["hp"] -= raw_damage
+        if is_crit:
+            if is_combo:
+                logs.append(f"⚡🔥 **COMBO CRIT!** **{attacker['name']}** đã đánh **{defender['name']}** gây `{raw_damage}` Dame")
+            else:
+                logs.append(f"🫀 **{defender['name']}** đã nhận đòn chí mạng từ **{attacker['name']}** và mất `{raw_damage}` HP")
+        logs.append(f"💥 **{attacker['name']}** đã đánh **{defender['name']}** gây `{raw_damage}` Dame")
+
+        attacker["combo_ready"] = False
+
+        if defender["hp"] <= 0:
+            defender["hp"] = 0
+            defender["alive"] = False
+            logs.append(f"💀 **{defender['name']}** đã bị **{attacker['name']}** đánh bại!")
+
+            target_user_inv = get_inv_user(self.inv, defender["user_id"])
+            old_love = get_love_value(target_user_inv, defender["waifu_id"])
+            new_love = apply_love_drop(target_user_inv, defender["waifu_id"])
+            self.affected_pairs.add((defender["user_id"], defender["waifu_id"]))
+            logs.append(f"💔 Love của **{defender['name']}** giảm từ `{old_love}` còn `{new_love}`")
+
+        return logs
+
+    def play_round(self) -> None:
+        score_a = self.total_speed("a")
+        score_b = self.total_speed("b")
+        if score_a <= 0 or score_b <= 0:
+            return
+
+        if get_initiative_score(self.team_a) >= get_initiative_score(self.team_b):
+            first_side, second_side = "a", "b"
+        else:
+            first_side, second_side = "b", "a"
+
+        self.add_log(f"🎯 **Round {self.turn}**: {self.side_name(first_side)} đi trước.")
+
+        for side in (first_side, second_side):
+            if self.is_over():
+                break
+
+            attacker = self.choose_attacker(side)
+            defender = self.choose_defender(side)
+
+            if not attacker or not defender:
+                break
+
+            action_logs = self.attack(attacker, defender)
+            for line in action_logs:
+                self.add_log(line)
+
+            if self.is_over():
+                break
+
+        self.turn += 1
+
+    def get_winner_side(self) -> Optional[str]:
+        a_alive = any(c["hp"] > 0 for c in self.team_a)
+        b_alive = any(c["hp"] > 0 for c in self.team_b)
+
+        if a_alive and not b_alive:
+            return "a"
+        if b_alive and not a_alive:
+            return "b"
+        return None
+
+    def render_embed(self) -> discord.Embed:
+        title = f"The battle giữa {self.challenger_name} và {self.defender_name}"
+
+        emb = discord.Embed(
+            title=title,
+            color=0xFF4D4D if self.turn < MAX_ROUNDS else 0xFFD700,
+        )
+
+        emb.add_field(
+            name=f"🔴 Team {self.challenger_name}",
+            value=team_status_text(self.team_a)[:1000] or "Không có waifu.",
+            inline=True,
+        )
+        emb.add_field(
+            name=f"🔵 Team {self.defender_name}",
+            value=team_status_text(self.team_b)[:1000] or "Không có waifu.",
+            inline=True,
+        )
+
+        log_text = "\n".join(trim_lines(self.logs, MAX_LOG_LINES)) or "Chưa có diễn biến."
+        emb.add_field(
+            name="Diễn biến",
+            value=log_text[:1024],
+            inline=False,
+        )
+
+        emb.set_footer(text=f"Turn hiện tại: {self.turn}")
+        return emb
+
+    def commit_and_sync(self) -> None:
+        save_json(INV_FILE, self.inv)
+        for user_id, waifu_id in self.affected_pairs:
+            try:
+                _sync_one(str(user_id), str(waifu_id))
+            except Exception as e:
+                debug("sync_one failed:", user_id, waifu_id, e)
+
+    def transfer_waifu(self, from_user: str, to_user: str, cap_rank: str) -> Tuple[Optional[str], str]:
+        source_inv = get_inv_user(self.inv, from_user)
+        target_inv = get_inv_user(self.inv, to_user)
+
+        exclude = set(target_inv.get("waifus", {}).keys())
+        chosen = choose_reward_waifu(self.inv, from_user, self.waifu_data, cap_rank, exclude=exclude)
+
+        if not chosen:
+            return None, "Không có waifu phù hợp để chuyển."
+
+        love_before = get_love_value(source_inv, chosen)
+        source_inv["waifus"].pop(chosen, None)
+        reset_waifu_progress(target_inv, chosen)
+
+        self.affected_pairs.add((from_user, chosen))
+        self.affected_pairs.add((to_user, chosen))
+
+        return chosen, f"Chuyển waifu **{chosen}** (love cũ `{love_before}`) sang người thắng."
+
+    def apply_final_rewards(self) -> List[str]:
+        logs: List[str] = []
+        winner_side = self.get_winner_side()
+        if winner_side is None:
+            return logs
+
+        winner_id = self.side_id(winner_side)
+        loser_id = self.defender_id if winner_side == "a" else self.challenger_id
+        cap_rank = get_turn_rank_cap(max(1, self.turn))
+
+        chosen, note = self.transfer_waifu(loser_id, winner_id, cap_rank)
+        if chosen:
+            logs.append(f"🎁 {note} | Rank cap: **{cap_rank}**")
+        else:
+            logs.append(f"🎁 Không tìm được waifu để chuyển từ người thua | Rank cap: **{cap_rank}**")
+
+        return logs
+
+
+async def fight_logic(
+    ctx,
+    opponent: discord.Member | discord.User,
+    *,
+    team_a: Optional[Sequence[str]] = None,
+    team_b: Optional[Sequence[str]] = None,
 ):
-    """
-    Ưu tiên:
-    1) mention trong message
-    2) người đang được reply
-    3) token trong args (mention / ID)
-    4) fallback về author hoặc None
-    """
-    if message.mentions:
-        return message.mentions[0]
+    challenger = get_user_obj(ctx)
+    defender = opponent
 
-    replied = await _resolve_replied_user(message)
-    if replied:
-        return replied
+    if challenger.id == defender.id:
+        return await send_like(ctx, "❌ Bạn không thể tự khiêu chiến chính mình.", ephemeral=True if hasattr(ctx, "response") else False)
 
-    for token in args or []:
-        user = await _resolve_user(bot, message, token)
-        if user:
-            return user
+    inv = load_json(INV_FILE)
+    waifu_data = load_json(WAIFU_FILE)
+    team_data = load_json(TEAM_FILE)
 
-    return message.author if fallback_author else None
+    challenger_id = str(challenger.id)
+    defender_id = str(defender.id)
 
+    if challenger_id not in inv:
+        return await send_like(ctx, "❌ Bạn chưa có waifu nào trong inventory.", ephemeral=True if hasattr(ctx, "response") else False)
+    if defender_id not in inv:
+        return await send_like(ctx, "❌ Đối thủ chưa có waifu nào trong inventory.", ephemeral=True if hasattr(ctx, "response") else False)
 
-def _resolve_channel(message: discord.Message, token: Optional[str]) -> Optional[discord.abc.GuildChannel]:
-    if not token or not message.guild:
-        return None
-    cid = _parse_mention_id(token)
-    if cid is None:
-        return None
-    return message.guild.get_channel(cid)
+    resolved_team_a = normalize_team_ids(challenger_id, inv, team_data, team_a)
+    resolved_team_b = normalize_team_ids(defender_id, inv, team_data, team_b)
 
+    if not resolved_team_a:
+        return await send_like(ctx, "❌ Bạn chưa có team hợp lệ để khiêu chiến.", ephemeral=True if hasattr(ctx, "response") else False)
+    if not resolved_team_b:
+        return await send_like(ctx, "❌ Đối thủ chưa có team hợp lệ để khiêu chiến.", ephemeral=True if hasattr(ctx, "response") else False)
 
-class _PrefixResponse:
-    def __init__(self, ctx: "PrefixContext"):
-        self.ctx = ctx
-        self.last_message: Optional[discord.Message] = None
+    luck_a = 1.0
+    luck_b = 1.0
+    try:
+        from Commands.prayer import get_luck
+        luck_a = float(get_luck(challenger.id))
+    except Exception:
+        pass
 
-    async def send_message(self, *args, **kwargs):
-        kwargs.pop("ephemeral", None)
-        self.last_message = await self.ctx.channel.send(*args, **kwargs)
-        return self.last_message
+    try:
+        from Commands.prayer import get_luck
+        luck_b = float(get_luck(defender.id))
+    except Exception:
+        pass
 
-    async def edit_message(self, *args, **kwargs):
-        if not self.last_message:
-            raise RuntimeError("No message to edit")
-        return await self.last_message.edit(*args, **kwargs)
+    original_inv = deepcopy(inv)
+    inv_working = deepcopy(inv)
 
-    async def defer(self, *args, **kwargs):
-        return None
-
-    async def send_modal(self, modal):
-        raise RuntimeError("Modal không hỗ trợ trong prefix command")
-
-
-class _PrefixFollowup:
-    def __init__(self, ctx: "PrefixContext"):
-        self.ctx = ctx
-
-    async def send(self, *args, **kwargs):
-        kwargs.pop("ephemeral", None)
-        return await self.ctx.channel.send(*args, **kwargs)
-
-
-class PrefixContext:
-    def __init__(self, bot: discord.Client, message: discord.Message):
-        self.bot = bot
-        self.client = bot
-        self.message = message
-        self.user = message.author
-        self.author = message.author
-        self.guild = message.guild
-        self.channel = message.channel
-        self.response = _PrefixResponse(self)
-        self.followup = _PrefixFollowup(self)
-
-    async def original_response(self):
-        return self.response.last_message
-
-    async def send(self, *args, **kwargs):
-        return await self.channel.send(*args, **kwargs)
-
-
-async def _send_embed_like(ctx: PrefixContext, embed_data: dict):
-    embed = discord.Embed(
-        title=embed_data.get("title", ""),
-        description=embed_data.get("description", ""),
-        color=discord.Color.pink(),
+    session = FightSession(
+        challenger_name=challenger.name,
+        defender_name=defender.name,
+        challenger_id=challenger_id,
+        defender_id=defender_id,
+        team_a_ids=resolved_team_a,
+        team_b_ids=resolved_team_b,
+        inv=inv_working,
+        waifu_data=waifu_data,
+        luck_a=luck_a,
+        luck_b=luck_b,
     )
-    image = embed_data.get("image")
-    footer = embed_data.get("footer")
-    if image:
-        embed.set_image(url=image)
-    if footer:
-        embed.set_footer(text=footer)
-    return await ctx.channel.send(embed=embed)
 
+    message = await send_like(ctx, content="⚔️ Chuẩn bị khai chiến...", embed=session.render_embed())
+    await asyncio.sleep(1)
 
-async def setup(bot):
-    """
-    Install the prefix listener.
-    """
-    if getattr(bot, "_prefix_listener_ready", False):
+    while session.turn <= MAX_ROUNDS and not session.is_over():
+        session.play_round()
+        await edit_like(message, embed=session.render_embed())
+        await asyncio.sleep(STEP_DELAY)
+
+    winner_side = session.get_winner_side()
+
+    if winner_side is None:
+        session.draw = True
+        save_json(INV_FILE, original_inv)
+        await edit_like(message, content=None, embed=session.render_embed(), view=None)
+        await send_like(ctx, "🤝 Trận đấu hòa! Không ai mất gì.", ephemeral=False)
         return
-    bot._prefix_listener_ready = True
 
-    async def on_message(message: discord.Message):
-        if message.author.bot:
-            return
-        if not message.content.startswith("."):
-            return
+    final_logs = session.apply_final_rewards()
+    for line in final_logs:
+        session.add_log(line)
 
-        try:
-            parts = shlex.split(message.content[1:])
-        except ValueError:
-            return
+    session.commit_and_sync()
 
-        if not parts:
-            return
+    winner_id = session.side_id(winner_side)
+    loser_id = challenger_id if winner_id == defender_id else defender_id
+    winner_name = challenger.name if winner_id == challenger_id else defender.name
+    loser_name = defender.name if loser_id == defender_id else challenger.name
 
-        raw_name = _normalize_name(parts[0])
-        args = parts[1:]
-        ctx = PrefixContext(bot, message)
+    result_embed = session.render_embed()
+    result_embed.color = 0x00FF00
+    result_embed.add_field(
+        name="Kết quả",
+        value=f"🏆 **{winner_name}** chiến thắng trước **{loser_name}**!",
+        inline=False,
+    )
 
-        async def reply(msg, ephemeral=False):
-            return await ctx.response.send_message(msg, ephemeral=ephemeral)
+    await edit_like(message, content=None, embed=result_embed, view=None)
 
-        async def reply_embed(embed_data):
-            return await _send_embed_like(ctx, embed_data)
+    await send_like(
+        ctx,
+        f"🏆 **{winner_name}** chiến thắng! `{get_turn_rank_cap(max(1, session.turn))}` là rank cap phần thưởng.",
+        ephemeral=False,
+    )
 
-        # ===== alias map =====
-        aliases = {
-            "setup": "setup",
-            "gold": "gold",
-            "daily": "daily",
-            "work": "work",
-            "roll-waifu": "roll-waifu",
-            "select-waifu": "select-waifu",
-            "waifu-list": "waifu-list",
-            "view-waifu": "view-waifu",
-            "bag": "bag",
-            "shop": "shop",
-            "use": "use",
-            "sell": "sell",
-            "give": "give",
-            "couple": "couple",
-            "couple-release": "couple-release",
-            "couple-cancel": "couple-cancel",
-            "couple-info": "couple-info",
-            "couple-gift": "couple-gift",
-            "coinflip": "coinflip",
-            "baucua": "baucua",
-            "code": "code",
-            "dau-gia": "dau-gia",
-            "huy-dau-gia": "huy-dau-gia",
-            "gift-waifu-ad": "gift-waifu-ad",
-            "help": "help",
-            "profile": "profile",
-            # 🔥 short alias
-            "bc": "baucua",
-            "bau": "baucua",
-            "cf": "coinflip",
-            "wl": "waifu-list",
-            "vw": "view-waifu",
-            "rw": "roll-waifu",
-            "dg": "dau-gia",
-            "hdg": "huy-dau-gia",
-            "cp": "couple",
-            "cpr": "couple-release",
-            "cpc": "couple-cancel",
-            "cpi": "couple-info",
-            "cpg": "couple-gift",
-            "gwa": "gift-waifu-ad",
-            "h": "help",
-            "s": "sell",
-            "gift": "give",
-            "coin": "coinflip",
-            "ws": "select-waifu",
-            "me": "profile",
-            "pf": "profile",
-            "prayer": "prayer",
-            "pray": "prayer",
-        }
 
-        # ===== SMART PARSER =====
-        cmd = None
-        used_len = 1
+def debug_snapshot(user_id: str):
+    inv = load_json(INV_FILE)
+    waifu_data = load_json(WAIFU_FILE)
+    levels = load_json(LEVEL_FILE)
+    user = inv.get(user_id, {})
+    out = {
+        "user_id": user_id,
+        "default_waifu": user.get("default_waifu"),
+        "waifus": user.get("waifus", {}),
+        "levels": levels.get(user_id, {}),
+        "available_team": normalize_team_ids(user_id, inv, load_json(TEAM_FILE)),
+        "waifu_meta": {wid: waifu_data.get(wid, {}) for wid in user.get("waifus", {}).keys()},
+    }
+    return out
 
-        # thử 3 từ → 2 từ → 1 từ
-        for i in (3, 2, 1):
-            if len(parts) >= i:
-                name = _normalize_name("-".join(parts[:i]))
-                if name in aliases:
-                    cmd = aliases[name]
-                    used_len = i
-                    break
 
-        if cmd is None:
-            return
-
-        args = parts[used_len:]
-
-        # ===== dispatch =====
-        try:
-            if cmd == "setup":
-                if len(args) < 2:
-                    return await reply("❌ Cú pháp: .setup <auction|ranking> <channel_id>")
-                ch = _parse_mention_id(args[1])
-                channel_id = str(ch) if ch is not None else args[1]
-                return await setup_channel_logic(ctx, args[0], channel_id)
-
-            if cmd == "gold":
-                target = await _smart_target(bot, message, args, fallback_author=True)
-                return await gold_logic(ctx, target)
-
-            if cmd == "daily":
-                return await daily_logic(ctx)
-
-            if cmd == "work":
-                return await work_run(ctx)
-
-            if cmd == "roll-waifu":
-                if not args:
-                    return await reply("❌ Cú pháp: .roll-waifu <free|200|500|1000|2000>")
-                return await roll_waifu_logic(ctx, args[0])
-
-            if cmd == "select-waifu":
-                if not args:
-                    return await reply("❌ Cú pháp: .select-waifu <waifu_id>")
-                return await select_waifu_logic(ctx, args[0])
-
-            if cmd == "waifu-list":
-                target = None
-                if args or message.mentions or message.reference:
-                    target = await _smart_target(bot, message, args, fallback_author=False)
-                return await waifu_list_run(ctx, target)
-
-            if cmd == "view-waifu":
-                if not args:
-                    return await reply("❌ Cú pháp: .view-waifu <waifu_id>")
-
-                # Hỗ trợ thêm: .view-waifu @user <waifu_id>
-                # Không phá cú pháp cũ .view-waifu <waifu_id>
-                if message.mentions and len(args) >= 2:
-                    return await view_waifu_logic(message.mentions[0], reply, reply_embed, args[1])
-
-                return await view_waifu_logic(message.author, reply, reply_embed, args[0])
-
-            if cmd == "bag":
-                target = None
-
-                if message.mentions:
-                    target = message.mentions[0]
-                elif args:
-                    target = await _resolve_user(bot, message, args[0])
-                elif message.reference:
-                    ref = message.reference.resolved
-                    if ref:
-                        target = ref.author
-
-                return await bag_logic(ctx, target)
-            if cmd == "shop":
-                if not args:
-                    return await reply("❌ Cú pháp: .shop <channel_id>")
-                ch = _parse_mention_id(args[0])
-                channel_id = str(ch) if ch is not None else args[0]
-                return await send_shop_embed_logic(ctx, channel_id)
-
-            if cmd == "use":
-                waifu_id = None
-                item_id = None
-                qty = 1
-
-                if not args:
-                    return await reply("❌ Cú pháp: .use <waifu_id>|item <item_id> [qty]")
-
-                if args[0].lower() in {"waifu", "item"}:
-                    mode = args[0].lower()
-                    if mode == "waifu":
-                        if len(args) < 2:
-                            return await reply("❌ Cú pháp: .use waifu <waifu_id>")
-                        waifu_id = args[1]
-                    else:
-                        if len(args) < 2:
-                            return await reply("❌ Cú pháp: .use item <item_id> [qty]")
-                        item_id = args[1]
-                        if len(args) >= 3:
-                            qty = int(args[2])
-                else:
-                    candidate = args[0]
-                    if len(args) >= 2 and args[1].isdigit():
-                        item_id = candidate
-                        qty = int(args[1])
-                    else:
-                        waifu_id = candidate
-                return await use_logic(message.author, reply, waifu_id, item_id, qty)
-
-            if cmd == "sell":
-                if not args:
-                    return await reply("❌ Cú pháp: .sell <waifu_id> [bag|collection] [amount]")
-                waifu_id = args[0]
-                source = None
-                amount = 1
-                if len(args) >= 2:
-                    if args[1].lower() in {"bag", "collection"}:
-                        source = args[1].lower()
-                        if len(args) >= 3:
-                            amount = int(args[2])
-                    elif args[1].isdigit():
-                        amount = int(args[1])
-                return await sell_logic(ctx, waifu_id, source, amount)
-
-            if cmd == "give":
-                if len(args) < 2:
-                    return await reply("❌ Cú pháp: .give <gold|waifu> <user> <amount>")
-                type_ = args[0]
-                target = await _smart_target(bot, message, args[1:], fallback_author=False)
-                if target is None:
-                    return await reply("❌ Không tìm thấy người nhận.")
-                amount = None
-                waifu_id = None
-                if type_ == "gold":
-                    if len(args) < 3:
-                        return await reply("❌ Cú pháp: .give gold <user> <amount>")
-                    amount = int(args[2])
-                elif type_ == "waifu":
-                    if len(args) < 3:
-                        return await reply("❌ Cú pháp: .give waifu <user> <waifu_id>")
-                    waifu_id = args[2]
-                else:
-                    return await reply("❌ Type phải là gold hoặc waifu.")
-                return await gift_logic(ctx, type_, target, amount, waifu_id)
-
-            if cmd == "couple":
-                if not args:
-                    return await reply("❌ Cú pháp: .couple <user> | .couple release | .couple cancel | .couple info | .couple gift <rose|cake>")
-                sub = _normalize_name(args[0])
-
-                if sub == "release":
-                    return await couple_release_logic(bot, ctx)
-                if sub == "cancel":
-                    return await couple_cancel_logic(ctx)
-                if sub == "info":
-                    return await couple_info_logic(ctx)
-                if sub == "gift":
-                    if len(args) < 2:
-                        return await reply("❌ Cú pháp: .couple gift <rose|cake>")
-                    return await couple_gift_logic(ctx, args[1])
-
-                target = await _smart_target(bot, message, args, fallback_author=False)
-                if target is None:
-                    return await reply("❌ Không tìm thấy người dùng.")
-                return await couple_logic(bot, ctx, target)
-
-            if cmd == "couple-release":
-                return await couple_release_logic(bot, ctx)
-
-            if cmd == "couple-cancel":
-                return await couple_cancel_logic(ctx)
-
-            if cmd == "couple-info":
-                return await couple_info_logic(ctx)
-
-            if cmd == "couple-gift":
-                if not args:
-                    return await reply("❌ Cú pháp: .couple-gift <rose|cake>")
-                return await couple_gift_logic(ctx, args[0])
-
-            if cmd == "coinflip":
-                if len(args) < 2:
-                    return await reply("❌ Cú pháp: .coinflip <ngua|sap> <amount>")
-                return await coinflip_logic(ctx, args[0], int(args[1]))
-
-            if cmd == "baucua":
-                if len(args) < 2:
-                    return await reply("❌ Cú pháp: .baucua <nai|bau|ga|ca|cua|tom> <amount>")
-                return await baucua_logic(ctx, args[0], int(args[1]))
-
-            if cmd == "code":
-                if not args:
-                    return await reply("❌ Cú pháp: .code <mã>")
-                return await code_logic(ctx, args[0])
-
-            if cmd == "dau-gia":
-                if len(args) < 3:
-                    return await reply("❌ Cú pháp: .dau-gia <waifu_id> <min_price> <step>")
-                return await dau_gia_logic(ctx, args[0], int(args[1]), int(args[2]))
-
-            if cmd == "huy-dau-gia":
-                if not args:
-                    return await reply("❌ Cú pháp: .huy-dau-gia <auction_id>")
-                return await huy_dau_gia_logic(ctx, args[0])
-
-            if cmd == "gift-waifu-ad":
-                if not args:
-                    return await reply("❌ Cú pháp: .gift-waifu-ad <waifu_id> [user]")
-                target = None
-                if len(args) >= 2:
-                    target = await _smart_target(bot, message, args[1:], fallback_author=False)
-                return await gift_waifu_ad_logic(ctx, args[0], target)
-
-            if cmd == "profile":
-                target = await _smart_target(bot, message, args, fallback_author=True)
-                embed = get_profile_embed(bot, target)
-                return await ctx.send(embed=embed)
-            if cmd == "prayer":
-                return await prayer_logic(ctx)
-
-            if cmd == "help":
-                await help_prefix(message)
-                return
-
-        except ValueError:
-            return await reply("❌ Tham số số không hợp lệ.")
-        except Exception as exc:
-            print(f"[PREFIX ERROR] {cmd}: {exc}")
-            return await reply("❌ Có lỗi khi xử lý lệnh.")
-
-    bot.add_listener(on_message, "on_message")
+print("Loaded fight.py!")
