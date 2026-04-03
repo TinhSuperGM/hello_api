@@ -66,16 +66,17 @@ RANK_DMG = {
 
 
 # ===== JSON HELPERS =====
-def load_json(path: str) -> dict:
+def load_json(path):
     if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({}, f)
         return {}
+
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except:
         return {}
-
-
 def save_json(path: str, data: dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
@@ -139,30 +140,40 @@ def waifu_display_name(waifu_data: dict, waifu_id: str) -> str:
 
 
 async def send_like(ctx, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None, view=None, ephemeral: bool = False):
+    kwargs = {}
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+    if view is not None:
+        kwargs["view"] = view
+    if ephemeral:
+        kwargs["ephemeral"] = True
+
     if hasattr(ctx, "response") and hasattr(ctx.response, "send_message"):
         is_done = getattr(ctx.response, "is_done", None)
         if callable(is_done) and is_done():
             if hasattr(ctx, "followup") and hasattr(ctx.followup, "send"):
-                return await ctx.followup.send(content=content, embed=embed, view=view, ephemeral=ephemeral)
-            return await ctx.send(content=content, embed=embed, view=view)
+                return await ctx.followup.send(**kwargs)
+            return await ctx.send(**kwargs)
 
-        await ctx.response.send_message(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        await ctx.response.send_message(**kwargs)
         try:
             return await ctx.original_response()
         except Exception:
             return None
 
-    return await ctx.send(content=content, embed=embed, view=view)
-
+    return await ctx.send(**kwargs)
 
 async def edit_like(message: discord.Message, *, content: Optional[str] = None, embed: Optional[discord.Embed] = None, view=None):
-    return await message.edit(content=content, embed=embed, view=view)
-
-
-def get_inv_user(inv: dict, user_id: str) -> dict:
-    return inv.setdefault(user_id, {"waifus": {}, "bag": {}, "bag_item": {}, "default_waifu": None})
-
-
+    kwargs = {}
+    if content is not None:
+        kwargs["content"] = content
+    if embed is not None:
+        kwargs["embed"] = embed
+    if view is not None:
+        kwargs["view"] = view
+    return await message.edit(**kwargs)
 def get_love_value(user_inv: dict, waifu_id: str) -> int:
     val = user_inv.get("waifus", {}).get(waifu_id, 0)
     if isinstance(val, int):
@@ -181,21 +192,15 @@ def resolve_level_from_love(love: int) -> int:
     return max(1, love // 100)
 
 
-def get_team_source(team_data: dict, user_id: str) -> Sequence[str]:
-    raw = team_data.get(user_id)
-    if raw is None:
+def get_team_source(team_data, user_id):
+    if not team_data:
         return []
 
-    if isinstance(raw, list):
-        return raw
+    raw = team_data.get(user_id)
+    if not raw:
+        return []
 
-    if isinstance(raw, dict):
-        for key in ("team", "waifus", "list", "members"):
-            if isinstance(raw.get(key), list):
-                return raw[key]
-
-    return []
-
+    return raw
 
 def normalize_team_ids(user_id: str, inv: dict, team_data: dict, explicit_team: Optional[Sequence[str]] = None) -> List[str]:
     user_inv = inv.get(user_id, {})
@@ -301,7 +306,20 @@ def apply_love_drop(user_inv: dict, waifu_id: str) -> int:
 def reset_waifu_progress(user_inv: dict, waifu_id: str) -> None:
     if LOVE_RESET_ON_TRANSFER:
         set_love_value(user_inv, waifu_id, 0)
+def get_inv_user(inv, user_id: str):
+    if not inv:
+        return {}
 
+    user = inv.get(str(user_id))
+    if not user:
+        return {}
+
+    # đảm bảo luôn có key
+    user.setdefault("waifus", {})
+    user.setdefault("bag", {})
+    user.setdefault("bag_item", {})
+
+    return user
 
 def build_combatant(user_id: str, waifu_id: str, inv: dict, waifu_data: dict, luck: float) -> dict:
     user_inv = get_inv_user(inv, user_id)
@@ -625,7 +643,7 @@ async def fight_logic(
 
     inv = load_json(INV_FILE)
     waifu_data = load_json(WAIFU_FILE)
-    team_data = load_json(TEAM_FILE)
+    team_data = load_json(TEAM_FILE) or {}
 
     challenger_id = str(challenger.id)
     defender_id = str(defender.id)
