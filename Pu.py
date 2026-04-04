@@ -33,7 +33,10 @@ from Commands.view_waifu import view_waifu_logic
 from Commands.waifu_list import waifu_list_run
 from Commands.work import work_run
 from Commands.help import help_prefix
-from Commands.profile import get_profile_embed, resolve_profile_target
+from Commands.profile import get_profile_embed
+from Commands.prayer import prayer_logic
+from Commands.fight import fight_logic
+from Commands.team import team_logic
 
 
 def _normalize_name(name: str) -> str:
@@ -77,6 +80,52 @@ async def _resolve_user(bot, message: discord.Message, token: Optional[str]) -> 
         return await bot.fetch_user(uid)
     except Exception:
         return None
+
+
+async def _resolve_replied_user(message: discord.Message) -> Optional[discord.abc.User]:
+    if not message.reference:
+        return None
+
+    try:
+        if message.reference.resolved and isinstance(message.reference.resolved, discord.Message):
+            return message.reference.resolved.author
+
+        if message.reference.message_id:
+            ref_msg = await message.channel.fetch_message(message.reference.message_id)
+            return ref_msg.author
+    except Exception:
+        return None
+
+    return None
+
+
+async def _smart_target(
+    bot,
+    message: discord.Message,
+    args,
+    *,
+    fallback_author: bool = True,
+):
+    """
+    Ưu tiên:
+    1) mention trong message
+    2) người đang được reply
+    3) token trong args (mention / ID)
+    4) fallback về author hoặc None
+    """
+    if message.mentions:
+        return message.mentions[0]
+
+    replied = await _resolve_replied_user(message)
+    if replied:
+        return replied
+
+    for token in args or []:
+        user = await _resolve_user(bot, message, token)
+        if user:
+            return user
+
+    return message.author if fallback_author else None
 
 
 def _resolve_channel(message: discord.Message, token: Optional[str]) -> Optional[discord.abc.GuildChannel]:
@@ -235,6 +284,10 @@ async def setup(bot):
             "ws": "select-waifu",
             "me": "profile",
             "pf": "profile",
+            "prayer": "prayer",
+            "pray": "prayer",
+            "team": "team",
+            "fight": "fight",
         }
 
         # ===== SMART PARSER =====
@@ -265,9 +318,7 @@ async def setup(bot):
                 return await setup_channel_logic(ctx, args[0], channel_id)
 
             if cmd == "gold":
-                target = message.author
-                if args:
-                    target = await _resolve_user(bot, message, args[0]) or message.author
+                target = await _smart_target(bot, message, args, fallback_author=True)
                 return await gold_logic(ctx, target)
 
             if cmd == "daily":
@@ -287,18 +338,35 @@ async def setup(bot):
                 return await select_waifu_logic(ctx, args[0])
 
             if cmd == "waifu-list":
-                target = await _resolve_user(bot, message, args[0]) if args else None
+                target = None
+                if args or message.mentions or message.reference:
+                    target = await _smart_target(bot, message, args, fallback_author=False)
                 return await waifu_list_run(ctx, target)
 
             if cmd == "view-waifu":
                 if not args:
                     return await reply("❌ Cú pháp: .view-waifu <waifu_id>")
+
+                # Hỗ trợ thêm: .view-waifu @user <waifu_id>
+                # Không phá cú pháp cũ .view-waifu <waifu_id>
+                if message.mentions and len(args) >= 2:
+                    return await view_waifu_logic(message.mentions[0], reply, reply_embed, args[1])
+
                 return await view_waifu_logic(message.author, reply, reply_embed, args[0])
 
             if cmd == "bag":
-                target = await _resolve_user(bot, message, args[0]) if args else None
-                return await bag_logic(ctx, target or message.author)
+                target = None
 
+                if message.mentions:
+                    target = message.mentions[0]
+                elif args:
+                    target = await _resolve_user(bot, message, args[0])
+                elif message.reference:
+                    ref = message.reference.resolved
+                    if ref:
+                        target = ref.author
+
+                return await bag_logic(ctx, target)
             if cmd == "shop":
                 if not args:
                     return await reply("❌ Cú pháp: .shop <channel_id>")
@@ -354,7 +422,7 @@ async def setup(bot):
                 if len(args) < 2:
                     return await reply("❌ Cú pháp: .give <gold|waifu> <user> <amount>")
                 type_ = args[0]
-                target = await _resolve_user(bot, message, args[1])
+                target = await _smart_target(bot, message, args[1:], fallback_author=False)
                 if target is None:
                     return await reply("❌ Không tìm thấy người nhận.")
                 amount = None
@@ -387,7 +455,7 @@ async def setup(bot):
                         return await reply("❌ Cú pháp: .couple gift <rose|cake>")
                     return await couple_gift_logic(ctx, args[1])
 
-                target = await _resolve_user(bot, message, args[0])
+                target = await _smart_target(bot, message, args, fallback_author=False)
                 if target is None:
                     return await reply("❌ Không tìm thấy người dùng.")
                 return await couple_logic(bot, ctx, target)
@@ -434,26 +502,48 @@ async def setup(bot):
             if cmd == "gift-waifu-ad":
                 if not args:
                     return await reply("❌ Cú pháp: .gift-waifu-ad <waifu_id> [user]")
-                target = await _resolve_user(bot, message, args[1]) if len(args) >= 2 else None
+                target = None
+                if len(args) >= 2:
+                    target = await _smart_target(bot, message, args[1:], fallback_author=False)
                 return await gift_waifu_ad_logic(ctx, args[0], target)
-            if cmd == "profile":
-                # Ưu tiên mention
-                if message.mentions:
-                    target = message.mentions[0]
-                else:
-                    query = " ".join(args).strip() if args else None
-                    target = await resolve_profile_target(
-                        bot=bot,
-                        author=message.author,
-                        query=query,
-                        message=message,
-                    )
 
+            if cmd == "profile":
+                target = await _smart_target(bot, message, args, fallback_author=True)
                 embed = get_profile_embed(bot, target)
                 return await ctx.send(embed=embed)
+            if cmd == "prayer":
+                return await prayer_logic(ctx)
+
             if cmd == "help":
                 await help_prefix(message)
                 return
+            if cmd == "fight":
+                await fight_logic(ctx, opponent)
+            # ===== TEAM =====
+            if cmd == "team":
+                from Commands.team import team_logic
+
+                if len(args) == 1:
+                    # .team
+                    return await team_logic(message, "show")
+
+                sub = args[1].lower()
+
+                if sub == "set":
+                    if len(args) < 3:
+                        return await message.channel.send("❌ Dùng: .team set waifu1 waifu2 waifu3")
+
+                    waifu_ids = " ".join(args[2:])
+                    return await team_logic(message, "set", waifu_ids)
+
+                if sub == "clear":
+                    return await team_logic(message, "clear")
+
+                if sub == "show":
+                    return await team_logic(message, "show")
+
+                return await message.channel.send("❌ Lệnh team không hợp lệ")
+
         except ValueError:
             return await reply("❌ Tham số số không hợp lệ.")
         except Exception as exc:
